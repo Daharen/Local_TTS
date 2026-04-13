@@ -9,4 +9,11 @@ add_executable(local_tts
     src/main.cpp
     src/paths.cpp
     src/whisper_runner.cpp
+    src/live_mode.cpp
+    src/audio_capture.cpp
+    src/text_injection.cpp
 )
+
+if(WIN32)
+    target_link_libraries(local_tts PRIVATE user32 shell32 winmm)
+endif()
