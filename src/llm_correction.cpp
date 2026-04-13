@@ -73,8 +73,34 @@ bool looks_like_meta_output(const std::string& text) {
            lower.rfind("the corrected", 0) == 0;
 }
 
-std::filesystem::path find_llama_cli_path(const std::filesystem::path& llama_root) {
+enum class LlamaFrontend {
+    Completion,
+    Cli,
+    Main,
+    Unknown,
+};
+
+LlamaFrontend detect_llama_frontend(const std::filesystem::path& exe_path) {
+    std::string name = exe_path.filename().string();
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (name.find("llama-completion") != std::string::npos) {
+        return LlamaFrontend::Completion;
+    }
+    if (name.find("llama-cli") != std::string::npos) {
+        return LlamaFrontend::Cli;
+    }
+    if (name == "main.exe" || name == "main") {
+        return LlamaFrontend::Main;
+    }
+    return LlamaFrontend::Unknown;
+}
+
+std::filesystem::path find_llama_executable_path(const std::filesystem::path& llama_root) {
     const std::vector<std::filesystem::path> candidates = {
+        llama_root / "build" / "bin" / "Release" / "llama-completion.exe",
+        llama_root / "build" / "bin" / "llama-completion.exe",
+        llama_root / "build" / "Release" / "llama-completion.exe",
+        llama_root / "build" / "llama-completion.exe",
         llama_root / "build" / "bin" / "Release" / "llama-cli.exe",
         llama_root / "build" / "bin" / "llama-cli.exe",
         llama_root / "build" / "Release" / "llama-cli.exe",
@@ -100,7 +126,7 @@ bool resolve_llama_inputs(std::filesystem::path& llama_exe, std::filesystem::pat
 
     const auto llama_cpp_root = get_llama_cpp_root();
     llama_model = get_llama_model_path();
-    llama_exe = find_llama_cli_path(llama_cpp_root);
+    llama_exe = find_llama_executable_path(llama_cpp_root);
 
     if (llama_exe.empty()) {
         error_out = "llama executable not found under: " + llama_cpp_root.string();
@@ -333,15 +359,15 @@ bool read_handle_all(HANDLE handle, std::string& out) {
     return last == ERROR_BROKEN_PIPE || last == ERROR_SUCCESS;
 }
 
-bool run_llama_cli(const std::filesystem::path& exe,
-                   const std::filesystem::path& model,
-                   const std::string& system_prompt,
-                   const std::string& user_prompt,
-                   std::string& stdout_out,
-                   std::string& stderr_out,
-                   std::string& error_out,
-                   bool with_reasoning_flag,
-                   bool with_no_conversation_flag) {
+bool run_llama_process(const std::filesystem::path& exe,
+                       const std::filesystem::path& model,
+                       LlamaFrontend frontend,
+                       const std::string& system_prompt,
+                       const std::string& user_prompt,
+                       std::string& stdout_out,
+                       std::string& stderr_out,
+                       std::string& error_out,
+                       bool with_reasoning_flag) {
     stdout_out.clear();
     stderr_out.clear();
 
@@ -376,34 +402,71 @@ bool run_llama_cli(const std::filesystem::path& exe,
     si.hStdError = stderr_write;
 
     PROCESS_INFORMATION pi{};
-    std::vector<std::wstring> args = {exe.wstring(),
-                                      L"-m",
-                                      model.wstring(),
-                                      L"--temp",
-                                      number_to_wide(get_correction_temperature()),
-                                      L"--top-k",
-                                      number_to_wide(get_correction_top_k()),
-                                      L"--top-p",
-                                      number_to_wide(get_correction_top_p()),
-                                      L"--min-p",
-                                      number_to_wide(get_correction_min_p()),
-                                      L"--single-turn",
-                                      L"--no-display-prompt",
-                                      L"--simple-io",
-                                      L"--log-disable",
-                                      L"--no-warmup",
-                                      L"-n",
-                                      L"128",
-                                      L"-sys",
-                                      utf8_to_wide(system_prompt),
-                                      L"-p",
-                                      utf8_to_wide(user_prompt)};
-    if (with_reasoning_flag) {
-        args.push_back(L"--reasoning");
-        args.push_back(L"off");
-    }
-    if (with_no_conversation_flag) {
-        args.push_back(L"--no-conversation");
+    std::vector<std::wstring> args = {exe.wstring(), L"-m", model.wstring()};
+
+    const auto push_sampling_flags = [&]() {
+        args.push_back(L"--temp");
+        args.push_back(number_to_wide(get_correction_temperature()));
+        args.push_back(L"--top-k");
+        args.push_back(number_to_wide(get_correction_top_k()));
+        args.push_back(L"--top-p");
+        args.push_back(number_to_wide(get_correction_top_p()));
+        args.push_back(L"--min-p");
+        args.push_back(number_to_wide(get_correction_min_p()));
+    };
+
+    switch (frontend) {
+        case LlamaFrontend::Completion:
+            push_sampling_flags();
+            args.push_back(L"-no-cnv");
+            args.push_back(L"--single-turn");
+            args.push_back(L"--no-display-prompt");
+            args.push_back(L"--simple-io");
+            args.push_back(L"--log-disable");
+            args.push_back(L"--no-warmup");
+            if (with_reasoning_flag) {
+                args.push_back(L"--reasoning");
+                args.push_back(L"off");
+            }
+            args.push_back(L"-n");
+            args.push_back(L"128");
+            args.push_back(L"-sys");
+            args.push_back(utf8_to_wide(system_prompt));
+            args.push_back(L"-p");
+            args.push_back(utf8_to_wide(user_prompt));
+            break;
+        case LlamaFrontend::Cli:
+            push_sampling_flags();
+            args.push_back(L"--single-turn");
+            args.push_back(L"--no-display-prompt");
+            args.push_back(L"--simple-io");
+            args.push_back(L"--log-disable");
+            args.push_back(L"--no-warmup");
+            if (with_reasoning_flag) {
+                args.push_back(L"--reasoning");
+                args.push_back(L"off");
+            }
+            args.push_back(L"-n");
+            args.push_back(L"128");
+            args.push_back(L"-sys");
+            args.push_back(utf8_to_wide(system_prompt));
+            args.push_back(L"-p");
+            args.push_back(utf8_to_wide(user_prompt));
+            break;
+        case LlamaFrontend::Main:
+        case LlamaFrontend::Unknown: {
+            push_sampling_flags();
+            args.push_back(L"--simple-io");
+            args.push_back(L"--log-disable");
+            args.push_back(L"--no-warmup");
+            args.push_back(L"-n");
+            args.push_back(L"128");
+            const std::string merged_prompt =
+                system_prompt + "\n\nUser transcript request:\n" + user_prompt + "\n\nOnly output rewritten text.";
+            args.push_back(L"-p");
+            args.push_back(utf8_to_wide(merged_prompt));
+            break;
+        }
     }
 
     std::wstring cmd_string = build_command_line(args);
@@ -430,7 +493,7 @@ bool run_llama_cli(const std::filesystem::path& exe,
     if (!launched) {
         CloseHandle(stdout_read);
         CloseHandle(stderr_read);
-        error_out = "Failed to launch llama-cli executable.";
+        error_out = "Failed to launch llama executable.";
         return false;
     }
 
@@ -452,7 +515,7 @@ bool run_llama_cli(const std::filesystem::path& exe,
             error_out = first_line(stdout_out);
         }
         if (error_out.empty()) {
-            error_out = "llama-cli failed with non-zero exit code: " + std::to_string(static_cast<unsigned long>(exit_code));
+            error_out = "llama executable failed with non-zero exit code: " + std::to_string(static_cast<unsigned long>(exit_code));
         }
         return false;
     }
@@ -495,10 +558,11 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     std::string stderr_text;
     const std::string system_prompt = build_system_prompt();
     const std::string user_prompt = build_user_prompt(raw_trimmed);
-    if (!run_llama_cli(llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, true, true) &&
-        !run_llama_cli(llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false, true) &&
-        !run_llama_cli(
-            llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false, false)) {
+    const LlamaFrontend frontend = detect_llama_frontend(llama_exe);
+    if (!run_llama_process(
+            llama_exe, llama_model, frontend, system_prompt, user_prompt, stdout_text, stderr_text, error_out, true) &&
+        !run_llama_process(
+            llama_exe, llama_model, frontend, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false)) {
         return false;
     }
 
