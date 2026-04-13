@@ -9,14 +9,14 @@ Local-first C++ transcription for Windows using external `whisper.cpp` and optio
 - `./run.ps1 live-debug`
 - `./run.ps1 llm-test "<text>"`
 
-## Whisper-first + local LLM cleanup
-- Pipeline remains **Whisper first**, then optional local llama.cpp correction/formatting.
-- Short transcripts still run one-shot correction.
-- Long transcripts are segmented and corrected chunk-by-chunk, then deterministically merged.
-- Long-form dictation no longer depends on one tiny `-n 128` rewrite.
+## Runtime config
+- `runtime.repo.json` is the committed central settings file for normal tuning.
+- `runtime.local.json` is an optional local override file (same schema, git-ignored).
+- `runtime.local.json.example` mirrors the full schema.
+- Prefer editing config files instead of changing code for runtime tuning.
 
-## Correction config knobs
-- `correction_max_output_tokens` (default `512`)
-- `correction_segment_max_chars` (default `1600`)
-- `correction_segment_overlap_chars` (default `200`)
-- `correction_force_segmentation_threshold_chars` (default `1800`)
+Resolution order for effective values:
+1. Environment variables
+2. `runtime.local.json`
+3. `runtime.repo.json`
+4. Centralized C++ fallback defaults
