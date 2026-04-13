@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -52,12 +53,16 @@ std::string now_stamp_readable() {
 
 class LiveModeApp {
 public:
+    explicit LiveModeApp(bool debug_console) : debug_console_(debug_console) {}
+
     int run() {
         if (!create_window()) {
             return 1;
         }
         set_state(L"Idle");
-        ShowWindow(window_, SW_HIDE);
+        if (!debug_console_) {
+            ShowWindow(window_, SW_HIDE);
+        }
         MSG msg;
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
             TranslateMessage(&msg);
@@ -71,12 +76,23 @@ private:
     struct LogPayload {
         bool correction_enabled = false;
         bool correction_applied = false;
+        bool paste_done = false;
+        bool paste_skipped = false;
+        bool paste_failed = false;
+        std::string wav_path;
         std::string raw_transcript;
         std::string corrected_transcript;
         std::string transcribe_error;
         std::string correction_error;
-        std::string paste_diag;
+        std::string paste_error;
     };
+
+    void debug_line(const std::string& line, bool as_error = false) const {
+        if (!debug_console_) {
+            return;
+        }
+        (as_error ? std::cerr : std::cout) << line << '\n';
+    }
 
     bool create_window() {
         HINSTANCE inst = GetModuleHandleW(nullptr);
@@ -91,9 +107,18 @@ private:
             return false;
         }
 
-        window_ = CreateWindowExW(0, wc.lpszClassName, L"Local TTS Live", WS_OVERLAPPEDWINDOW,
-                                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-                                  nullptr, nullptr, inst, this);
+        window_ = CreateWindowExW(0,
+                                  wc.lpszClassName,
+                                  L"Local TTS Live",
+                                  WS_OVERLAPPEDWINDOW,
+                                  CW_USEDEFAULT,
+                                  CW_USEDEFAULT,
+                                  CW_USEDEFAULT,
+                                  CW_USEDEFAULT,
+                                  nullptr,
+                                  nullptr,
+                                  inst,
+                                  this);
         if (!window_) {
             return false;
         }
@@ -172,6 +197,7 @@ private:
         recording_ = true;
         MessageBeep(MB_OK);
         set_state(L"Recording");
+        debug_line("[CAPTURE_START]");
     }
 
     void stop_recording_and_transcribe() {
@@ -179,6 +205,7 @@ private:
         capture_.stop();
         MessageBeep(MB_ICONASTERISK);
         set_state(L"Transcribing");
+        debug_line("[CAPTURE_STOP]");
 
         transcribing_.store(true);
 
@@ -189,20 +216,44 @@ private:
 
             LogPayload log;
             log.correction_enabled = is_correction_enabled();
+            log.wav_path = wav_path.string();
+            debug_line("[WAV_PATH] " + log.wav_path);
 
             if (!capture_.write_wav(wav_path)) {
                 log.transcribe_error = "Failed to write WAV file.";
+                debug_line("[WHISPER_ERROR] " + log.transcribe_error, true);
             } else {
                 transcribe_file_to_string(wav_path, log.raw_transcript, log.transcribe_error);
+                if (!log.transcribe_error.empty()) {
+                    debug_line("[WHISPER_ERROR] " + log.transcribe_error, true);
+                } else {
+                    debug_line("[WHISPER_RAW] " + log.raw_transcript);
+                }
             }
 
             std::string output_text = log.raw_transcript;
+            debug_line(std::string("[LLM_ENABLED] ") + (log.correction_enabled ? "true" : "false"));
+
             if (log.correction_enabled && !log.raw_transcript.empty()) {
-                if (correct_transcript_text(log.raw_transcript, log.corrected_transcript, log.correction_error) &&
+                CorrectionRunInfo info;
+                if (correct_transcript_text_with_info(
+                        log.raw_transcript, log.corrected_transcript, log.correction_error, &info) &&
                     !log.corrected_transcript.empty()) {
                     output_text = log.corrected_transcript;
                     log.correction_applied = true;
+                    debug_line("[LLM_INPUT] " + log.raw_transcript);
+                    debug_line("[LLM_OUTPUT] " + log.corrected_transcript);
+                    debug_line("[LLM_APPLIED] true");
+                } else {
+                    debug_line("[LLM_INPUT] " + log.raw_transcript);
+                    if (!log.corrected_transcript.empty()) {
+                        debug_line("[LLM_OUTPUT] " + log.corrected_transcript);
+                    }
+                    debug_line("[LLM_FAILED] " + log.correction_error, true);
+                    debug_line("[LLM_APPLIED] false");
                 }
+            } else if (!log.raw_transcript.empty()) {
+                debug_line("[LLM_APPLIED] false");
             }
 
             if (!output_text.empty()) {
@@ -210,23 +261,28 @@ private:
                 const bool target_valid = target_window_ && IsWindow(target_window_) && IsWindowVisible(target_window_);
 
                 if (!target_valid) {
-                    log.paste_diag = "[PASTE_SKIPPED] Target window is no longer valid/visible.";
+                    log.paste_skipped = true;
+                    log.paste_error = "Target window is no longer valid/visible.";
+                    debug_line("[PASTE_SKIPPED] " + log.paste_error, true);
+                } else if (current != target_window_) {
+                    log.paste_skipped = true;
+                    log.paste_error = "Focus changed; paste skipped to avoid disruptive window changes.";
+                    debug_line("[PASTE_SKIPPED] " + log.paste_error, true);
                 } else {
-                    if (current != target_window_) {
-                        SetForegroundWindow(target_window_);
-                        std::this_thread::sleep_for(std::chrono::milliseconds(40));
-                        current = GetForegroundWindow();
-                    }
-
-                    if (current == target_window_) {
-                        std::string inject_error;
-                        if (!inject_text_via_clipboard_paste(target_window_, output_text, inject_error)) {
-                            log.paste_diag = "[PASTE_FAILED] " + inject_error;
-                        }
+                    std::string inject_error;
+                    if (!inject_text_via_clipboard_paste(target_window_, output_text, inject_error)) {
+                        log.paste_failed = true;
+                        log.paste_error = inject_error;
+                        debug_line("[PASTE_FAILED] " + inject_error, true);
                     } else {
-                        log.paste_diag = "[PASTE_SKIPPED] Focus changed; paste skipped to avoid disruptive window changes.";
+                        log.paste_done = true;
+                        debug_line("[PASTE_DONE]");
                     }
                 }
+            } else if (log.transcribe_error.empty()) {
+                log.paste_skipped = true;
+                log.paste_error = "No transcript text available for paste.";
+                debug_line("[PASTE_SKIPPED] " + log.paste_error);
             }
 
             append_log(log_path, log);
@@ -241,31 +297,34 @@ private:
             return;
         }
 
-        out << "---- [" << now_stamp_readable() << "] ----\n";
-        out << "correction_enabled=" << (log.correction_enabled ? "true" : "false") << "\n";
+        out << "[TIMESTAMP] " << now_stamp_readable() << "\n";
+        out << "[WAV_PATH] " << log.wav_path << "\n";
+        out << "[CORRECTION_ENABLED] " << (log.correction_enabled ? "true" : "false") << "\n";
 
         if (!log.raw_transcript.empty()) {
-            out << "raw: " << log.raw_transcript << "\n";
-            if (!log.corrected_transcript.empty()) {
-                out << "corrected: " << log.corrected_transcript << "\n";
-            }
-            out << "correction_applied=" << (log.correction_applied ? "true" : "false") << "\n";
-            if (!log.correction_error.empty()) {
-                out << "[CORRECTION_FAILED] " << log.correction_error << "\n";
-            }
-            if (!log.paste_diag.empty()) {
-                out << log.paste_diag << "\n";
-            }
-            out << "\n";
-            return;
+            out << "[RAW_WHISPER] " << log.raw_transcript << "\n";
         }
+        if (!log.corrected_transcript.empty()) {
+            out << "[CORRECTED_TEXT] " << log.corrected_transcript << "\n";
+        }
+        out << "[CORRECTION_APPLIED] " << (log.correction_applied ? "true" : "false") << "\n";
 
+        if (!log.correction_error.empty()) {
+            out << "[CORRECTION_FAILED] " << log.correction_error << "\n";
+        }
         if (!log.transcribe_error.empty()) {
-            out << "[ERROR] " << log.transcribe_error << "\n\n";
-            return;
+            out << "[TRANSCRIBE_ERROR] " << log.transcribe_error << "\n";
         }
-
-        out << "[EMPTY]\n\n";
+        if (log.paste_done) {
+            out << "[PASTE_DONE]\n";
+        }
+        if (log.paste_skipped) {
+            out << "[PASTE_SKIPPED] " << log.paste_error << "\n";
+        }
+        if (log.paste_failed) {
+            out << "[PASTE_FAILED] " << log.paste_error << "\n";
+        }
+        out << "\n";
     }
 
     void on_transcribe_done() {
@@ -293,6 +352,13 @@ private:
 
     void set_state(const wchar_t* state) {
         state_text_ = state;
+        std::string state_marker = "Transcribing";
+        if (std::wcscmp(state, L"Idle") == 0) {
+            state_marker = "Idle";
+        } else if (std::wcscmp(state, L"Recording") == 0) {
+            state_marker = "Recording";
+        }
+        debug_line("[LIVE_STATE] " + state_marker);
         if (!window_) {
             return;
         }
@@ -319,6 +385,7 @@ private:
 
     void request_exit() {
         shutting_down_ = true;
+        debug_line("[SHUTDOWN]");
         KillTimer(window_, kTimerId);
         if (recording_) {
             recording_ = false;
@@ -351,17 +418,18 @@ private:
     std::atomic<bool> transcribing_{false};
     bool recording_ = false;
     bool shutting_down_ = false;
+    bool debug_console_ = false;
 };
 
 }  // namespace
 
-int run_live_mode() {
+int run_live_mode(bool debug_console) {
     HWND console = GetConsoleWindow();
-    if (console) {
+    if (console && !debug_console) {
         ShowWindow(console, SW_HIDE);
     }
 
-    LiveModeApp app;
+    LiveModeApp app(debug_console);
     return app.run();
 }
 
@@ -369,7 +437,7 @@ int run_live_mode() {
 
 #include <iostream>
 
-int run_live_mode() {
+int run_live_mode(bool) {
     std::cerr << "Live mode is Windows-only.\n";
     return 1;
 }
