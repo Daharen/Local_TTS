@@ -1,3 +1,5 @@
 {
-  "large_data_root": "F:\\Local_TTS_Large_Data"
+  "large_data_root": "F:\\Local_TTS_Large_Data",
+  "whisper_cpp_root": "F:\\Local_TTS_Large_Data\\external\\whisper.cpp",
+  "whisper_model_path": "F:\\Local_TTS_Large_Data\\models\\whisper.cpp\\ggml-base.en.bin"
 }
