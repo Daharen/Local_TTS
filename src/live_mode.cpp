@@ -34,9 +34,7 @@ constexpr UINT kTrayId = 1;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_TRANSCRIBE_DONE = WM_APP + 2;
 constexpr UINT ID_TRAY_EXIT = 1001;
-#if LOCAL_TTS_ENABLE_DASHBOARD
 constexpr UINT ID_TRAY_DASHBOARD = 1002;
-#endif
 
 std::string normalize_mode_label(std::string mode) {
     std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -179,13 +177,9 @@ private:
                 self->on_timer();
                 return 0;
             case WM_COMMAND:
-#if LOCAL_TTS_ENABLE_DASHBOARD
                 if (LOWORD(wparam) == ID_TRAY_DASHBOARD) {
                     self->open_dashboard();
                 } else if (LOWORD(wparam) == ID_TRAY_EXIT) {
-#else
-                if (LOWORD(wparam) == ID_TRAY_EXIT) {
-#endif
                     self->request_exit();
                 }
                 return 0;
@@ -532,10 +526,8 @@ private:
         if (!menu) {
             return;
         }
-#if LOCAL_TTS_ENABLE_DASHBOARD
         AppendMenuW(menu, MF_STRING, ID_TRAY_DASHBOARD, L"Dashboard");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-#endif
         AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit");
         POINT pt;
         GetCursorPos(&pt);
@@ -545,11 +537,9 @@ private:
     }
 
     void open_dashboard() {
-#if LOCAL_TTS_ENABLE_DASHBOARD
         if (!dashboard::show_dashboard_window(window_, debug_console_)) {
             debug_line("[DASHBOARD_OPEN_FAILED]", true);
         }
-#endif
     }
 
     void request_exit() {
