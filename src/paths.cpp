@@ -56,23 +56,27 @@ std::string parse_json_string_at(const std::string& text, std::size_t start_quot
     return {};
 }
 
-std::string find_large_data_root_override(const std::string& json) {
-    const std::string key = "\"large_data_root\"";
+std::string find_json_string_value(const std::string& json, const std::string& key_name) {
+    const std::string key = "\"" + key_name + "\"";
     const auto key_pos = json.find(key);
     if (key_pos == std::string::npos) {
         return {};
     }
+
     auto colon_pos = json.find(':', key_pos + key.size());
     if (colon_pos == std::string::npos) {
         return {};
     }
+
     ++colon_pos;
     while (colon_pos < json.size() && (json[colon_pos] == ' ' || json[colon_pos] == '\t' || json[colon_pos] == '\r' || json[colon_pos] == '\n')) {
         ++colon_pos;
     }
+
     if (colon_pos >= json.size() || json[colon_pos] != '"') {
         return {};
     }
+
     return parse_json_string_at(json, colon_pos);
 }
 
@@ -94,6 +98,14 @@ std::string escape_json(const std::string& input) {
     return out;
 }
 
+std::string read_runtime_value(const std::string& key_name) {
+    const auto config_content = read_file(get_repo_root() / "runtime.local.json");
+    if (config_content.empty()) {
+        return {};
+    }
+    return trim_copy(find_json_string_value(config_content, key_name));
+}
+
 }  // namespace
 
 std::filesystem::path get_repo_root() {
@@ -102,15 +114,10 @@ std::filesystem::path get_repo_root() {
 
 std::filesystem::path get_large_data_root() {
     const std::filesystem::path fallback = R"(F:\Local_TTS_Large_Data)";
-    const auto repo_root = get_repo_root();
 
-    const auto runtime_config = repo_root / "runtime.local.json";
-    const auto config_content = read_file(runtime_config);
-    if (!config_content.empty()) {
-        const auto from_runtime = trim_copy(find_large_data_root_override(config_content));
-        if (!from_runtime.empty()) {
-            return std::filesystem::path(from_runtime);
-        }
+    const auto from_runtime = read_runtime_value("large_data_root");
+    if (!from_runtime.empty()) {
+        return std::filesystem::path(from_runtime);
     }
 
     if (const char* env = std::getenv("LOCAL_TTS_LARGE_DATA_ROOT")) {
@@ -123,14 +130,50 @@ std::filesystem::path get_large_data_root() {
     return fallback;
 }
 
+std::filesystem::path get_whisper_cpp_root() {
+    const auto from_runtime = read_runtime_value("whisper_cpp_root");
+    if (!from_runtime.empty()) {
+        return std::filesystem::path(from_runtime);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_WHISPER_CPP_ROOT")) {
+        const auto from_env = trim_copy(env);
+        if (!from_env.empty()) {
+            return std::filesystem::path(from_env);
+        }
+    }
+
+    return get_large_data_root() / "external" / "whisper.cpp";
+}
+
+std::filesystem::path get_whisper_model_path() {
+    const auto from_runtime = read_runtime_value("whisper_model_path");
+    if (!from_runtime.empty()) {
+        return std::filesystem::path(from_runtime);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_WHISPER_MODEL_PATH")) {
+        const auto from_env = trim_copy(env);
+        if (!from_env.empty()) {
+            return std::filesystem::path(from_env);
+        }
+    }
+
+    return get_large_data_root() / "models" / "whisper.cpp" / "ggml-base.en.bin";
+}
+
 std::string describe_paths_json() {
     const auto repo = get_repo_root().string();
     const auto data = get_large_data_root().string();
+    const auto whisper_cpp = get_whisper_cpp_root().string();
+    const auto whisper_model = get_whisper_model_path().string();
 
     std::ostringstream out;
     out << "{\n"
         << "  \"repo_root\": \"" << escape_json(repo) << "\",\n"
-        << "  \"large_data_root\": \"" << escape_json(data) << "\"\n"
+        << "  \"large_data_root\": \"" << escape_json(data) << "\",\n"
+        << "  \"whisper_cpp_root\": \"" << escape_json(whisper_cpp) << "\",\n"
+        << "  \"whisper_model_path\": \"" << escape_json(whisper_model) << "\"\n"
         << "}";
     return out.str();
 }

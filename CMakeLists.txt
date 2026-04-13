@@ -8,4 +8,5 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(local_tts
     src/main.cpp
     src/paths.cpp
+    src/whisper_runner.cpp
 )
