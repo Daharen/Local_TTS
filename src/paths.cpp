@@ -241,14 +241,14 @@ std::filesystem::path get_llama_model_path() {
 bool is_correction_enabled() {
     const auto runtime_value = read_runtime_value("correction_enabled");
     if (!runtime_value.empty()) {
-        return parse_bool_value(runtime_value, false);
+        return parse_bool_value(runtime_value, true);
     }
 
     if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_ENABLED")) {
-        return parse_bool_value(trim_copy(env), false);
+        return parse_bool_value(trim_copy(env), true);
     }
 
-    return false;
+    return true;
 }
 
 double get_correction_temperature() {
@@ -303,6 +303,22 @@ double get_correction_min_p() {
     return 0.0;
 }
 
+std::string get_correction_mode() {
+    const auto runtime_value = trim_copy(read_runtime_value("correction_mode"));
+    if (!runtime_value.empty()) {
+        return runtime_value;
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_MODE")) {
+        const auto from_env = trim_copy(env);
+        if (!from_env.empty()) {
+            return from_env;
+        }
+    }
+
+    return "formatted";
+}
+
 std::string describe_paths_json() {
     const auto repo = get_repo_root().string();
     const auto data = get_large_data_root().string();
@@ -323,7 +339,8 @@ std::string describe_paths_json() {
         << "  \"correction_temperature\": " << get_correction_temperature() << ",\n"
         << "  \"correction_top_k\": " << get_correction_top_k() << ",\n"
         << "  \"correction_top_p\": " << get_correction_top_p() << ",\n"
-        << "  \"correction_min_p\": " << get_correction_min_p() << "\n"
+        << "  \"correction_min_p\": " << get_correction_min_p() << ",\n"
+        << "  \"correction_mode\": \"" << escape_json(get_correction_mode()) << "\"\n"
         << "}";
     return out.str();
 }

@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <cwchar>
+#include <algorithm>
 
 #ifdef _WIN32
 #include <shellapi.h>
@@ -30,6 +32,11 @@ constexpr UINT kTrayId = 1;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_TRANSCRIBE_DONE = WM_APP + 2;
 constexpr UINT ID_TRAY_EXIT = 1001;
+
+std::string normalize_mode_label(std::string mode) {
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return mode == "notes" ? "notes" : "formatted";
+}
 
 std::string now_stamp_for_file() {
     const auto now = std::chrono::system_clock::now();
@@ -80,8 +87,9 @@ private:
         bool paste_skipped = false;
         bool paste_failed = false;
         std::string wav_path;
+        std::string correction_mode;
         std::string raw_transcript;
-        std::string corrected_transcript;
+        std::string formatted_text;
         std::string transcribe_error;
         std::string correction_error;
         std::string paste_error;
@@ -216,6 +224,7 @@ private:
 
             LogPayload log;
             log.correction_enabled = is_correction_enabled();
+            log.correction_mode = normalize_mode_label(get_correction_mode());
             log.wav_path = wav_path.string();
             debug_line("[WAV_PATH] " + log.wav_path);
 
@@ -233,21 +242,26 @@ private:
 
             std::string output_text = log.raw_transcript;
             debug_line(std::string("[LLM_ENABLED] ") + (log.correction_enabled ? "true" : "false"));
+            debug_line("[LLM_MODE] " + log.correction_mode);
 
             if (log.correction_enabled && !log.raw_transcript.empty()) {
                 CorrectionRunInfo info;
                 if (correct_transcript_text_with_info(
-                        log.raw_transcript, log.corrected_transcript, log.correction_error, &info) &&
-                    !log.corrected_transcript.empty()) {
-                    output_text = log.corrected_transcript;
+                        log.raw_transcript, log.formatted_text, log.correction_error, &info) &&
+                    !log.formatted_text.empty()) {
+                    log.correction_mode = info.correction_mode;
+                    output_text = log.formatted_text;
                     log.correction_applied = true;
                     debug_line("[LLM_INPUT] " + log.raw_transcript);
-                    debug_line("[LLM_OUTPUT] " + log.corrected_transcript);
+                    debug_line("[LLM_OUTPUT] " + log.formatted_text);
                     debug_line("[LLM_APPLIED] true");
                 } else {
+                    if (!info.correction_mode.empty()) {
+                        log.correction_mode = info.correction_mode;
+                    }
                     debug_line("[LLM_INPUT] " + log.raw_transcript);
-                    if (!log.corrected_transcript.empty()) {
-                        debug_line("[LLM_OUTPUT] " + log.corrected_transcript);
+                    if (!log.formatted_text.empty()) {
+                        debug_line("[LLM_OUTPUT] " + log.formatted_text);
                     }
                     debug_line("[LLM_FAILED] " + log.correction_error, true);
                     debug_line("[LLM_APPLIED] false");
@@ -300,12 +314,13 @@ private:
         out << "[TIMESTAMP] " << now_stamp_readable() << "\n";
         out << "[WAV_PATH] " << log.wav_path << "\n";
         out << "[CORRECTION_ENABLED] " << (log.correction_enabled ? "true" : "false") << "\n";
+        out << "[CORRECTION_MODE] " << log.correction_mode << "\n";
 
         if (!log.raw_transcript.empty()) {
             out << "[RAW_WHISPER] " << log.raw_transcript << "\n";
         }
-        if (!log.corrected_transcript.empty()) {
-            out << "[CORRECTED_TEXT] " << log.corrected_transcript << "\n";
+        if (!log.formatted_text.empty()) {
+            out << "[FORMATTED_TEXT] " << log.formatted_text << "\n";
         }
         out << "[CORRECTION_APPLIED] " << (log.correction_applied ? "true" : "false") << "\n";
 

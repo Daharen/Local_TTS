@@ -1,29 +1,23 @@
 # Local_TTS
 
-Minimal local-first C++ transcription app for Windows, using external `whisper.cpp` and optional external `llama.cpp` outside this repo.
+Local-first C++ transcription for Windows using external `whisper.cpp` and optional external `llama.cpp`.
 
 ## Commands
-- Print resolved paths JSON:
-  - `./run.ps1`
-- Transcribe a WAV file:
-  - `./run.ps1 transcribe <path-to-audio.wav>`
-- Start resident live dictation mode (Windows-only, hidden tray behavior):
-  - `./run.ps1 live`
-- Start live dictation with console diagnostics:
-  - `./run.ps1 live-debug`
-- Directly test local LLM correction:
-  - `./run.ps1 llm-test "<text>"`
+- `./run.ps1`
+- `./run.ps1 transcribe <path-to-audio.wav>`
+- `./run.ps1 live`
+- `./run.ps1 live-debug`
+- `./run.ps1 llm-test "<text>"`
 
-## Correction layer
-- The correction layer runs on finalized Whisper text only.
-- It is **disabled by default** (`correction_enabled: false`).
-- Enable it in `runtime.local.json` by setting:
-  - `correction_enabled: true`
-  - `llama_cpp_root`
-  - `llama_model_path`
-- Decoding defaults stay deterministic (`temperature=0.0`, `top_k=1`, `top_p=0.0`, `min_p=0.0`).
+## LLM formatting layer (enabled by default)
+- Finalized Whisper text now goes through a default-on formatting layer (`correction_enabled: true`).
+- The layer does conservative grammar/punctuation cleanup plus readability formatting.
+- It may add line breaks, paragraph breaks, indentation, and light structure when warranted.
+- `correction_mode: "formatted"` (default) keeps structure minimal and readability-focused.
+- `correction_mode: "notes"` is more willing to emit bullet/list structure when content supports it.
+- Switch modes in `runtime.local.json` (or `LOCAL_TTS_CORRECTION_MODE`).
 
-## Live behavior
-- Hold `Ctrl+Alt` to record; release to transcribe and insert.
-- `live-debug` prints machine-readable stage markers to the console.
-- Insertion remains non-disruptive: clipboard Unicode text + `SendInput` Ctrl+V with no restore/resize/move behavior.
+## Diagnostics
+- Direct formatting test: `./run.ps1 llm-test "<text>"`
+- Live debug mode: `./run.ps1 live-debug`
+- Live mode remains non-disruptive to target windows (no restore/resize/move behavior).

@@ -6,7 +6,7 @@
 struct CorrectionRunInfo {
     std::filesystem::path llama_exe;
     std::filesystem::path llama_model;
-    std::string prompt_mode;
+    std::string correction_mode;
 };
 
 bool correct_transcript_text(const std::string& raw_text, std::string& corrected_text, std::string& error_out);

@@ -14,4 +14,5 @@ double get_correction_temperature();
 int get_correction_top_k();
 double get_correction_top_p();
 double get_correction_min_p();
+std::string get_correction_mode();
 std::string describe_paths_json();
