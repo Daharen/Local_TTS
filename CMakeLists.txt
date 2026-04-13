@@ -11,6 +11,8 @@ add_executable(local_tts
     src/app_config.cpp
     src/whisper_runner.cpp
     src/live_mode.cpp
+    src/diagnostics.cpp
+    src/dashboard.cpp
     src/audio_capture.cpp
     src/text_injection.cpp
     src/llm_correction.cpp

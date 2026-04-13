@@ -1,6 +1,8 @@
 #include "live_mode.h"
 
 #include "audio_capture.h"
+#include "dashboard.h"
+#include "diagnostics.h"
 #include "llm_correction.h"
 #include "paths.h"
 #include "text_injection.h"
@@ -32,6 +34,7 @@ constexpr UINT kTrayId = 1;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_TRANSCRIBE_DONE = WM_APP + 2;
 constexpr UINT ID_TRAY_EXIT = 1001;
+constexpr UINT ID_TRAY_DASHBOARD = 1002;
 
 std::string normalize_mode_label(std::string mode) {
     std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -56,6 +59,22 @@ std::string now_stamp_readable() {
     std::ostringstream out;
     out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return out.str();
+}
+
+std::string sanitize_payload_text(const std::string& input) {
+    std::string out;
+    out.reserve(input.size());
+    for (char c : input) {
+        if (c != '\0') {
+            out.push_back(c);
+        }
+    }
+    const auto first = out.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "";
+    }
+    const auto last = out.find_last_not_of(" \t\r\n");
+    return out.substr(first, last - first + 1);
 }
 
 class LiveModeApp {
@@ -158,7 +177,9 @@ private:
                 self->on_timer();
                 return 0;
             case WM_COMMAND:
-                if (LOWORD(wparam) == ID_TRAY_EXIT) {
+                if (LOWORD(wparam) == ID_TRAY_DASHBOARD) {
+                    self->open_dashboard();
+                } else if (LOWORD(wparam) == ID_TRAY_EXIT) {
                     self->request_exit();
                 }
                 return 0;
@@ -201,8 +222,15 @@ private:
     }
 
     void start_recording() {
+        session_id_ = diagnostics::begin_session();
+        diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::RecordingStart, "recording requested");
         target_window_ = GetForegroundWindow();
         if (!capture_.start()) {
+            diagnostics::diag_end(session_id_,
+                                  diagnostics::DiagnosticStage::RecordingStart,
+                                  "audio capture start failed",
+                                  true,
+                                  false);
             set_state(L"Idle");
             return;
         }
@@ -210,11 +238,18 @@ private:
         MessageBeep(MB_OK);
         set_state(L"Recording");
         debug_line("[CAPTURE_START]");
+        diagnostics::diag_end(session_id_,
+                              diagnostics::DiagnosticStage::RecordingStart,
+                              "audio capture started",
+                              true,
+                              true);
     }
 
     void stop_recording_and_transcribe() {
         recording_ = false;
         capture_.stop();
+        diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::RecordingStop, "recording stopped");
+        diagnostics::set_recording_stop_time(session_id_);
         MessageBeep(MB_ICONASTERISK);
         set_state(L"Transcribing");
         debug_line("[CAPTURE_STOP]");
@@ -233,11 +268,28 @@ private:
             log.wav_path = wav_path.string();
             debug_line("[WAV_PATH] " + log.wav_path);
 
+            diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::WavWrite, "write wav");
             if (!capture_.write_wav(wav_path)) {
                 log.transcribe_error = "Failed to write WAV file.";
                 debug_line("[WHISPER_ERROR] " + log.transcribe_error, true);
+                diagnostics::diag_end(session_id_,
+                                      diagnostics::DiagnosticStage::WavWrite,
+                                      log.transcribe_error,
+                                      true,
+                                      false);
             } else {
+                diagnostics::diag_end(session_id_,
+                                      diagnostics::DiagnosticStage::WavWrite,
+                                      "wav write completed",
+                                      true,
+                                      true);
+                diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Whisper, "whisper begin");
                 transcribe_file_to_string(wav_path, log.raw_transcript, log.transcribe_error);
+                diagnostics::diag_end(session_id_,
+                                      diagnostics::DiagnosticStage::Whisper,
+                                      log.transcribe_error.empty() ? "whisper completed" : log.transcribe_error,
+                                      true,
+                                      log.transcribe_error.empty());
                 if (!log.transcribe_error.empty()) {
                     debug_line("[WHISPER_ERROR] " + log.transcribe_error, true);
                 } else {
@@ -250,6 +302,7 @@ private:
             debug_line("[CORRECTION_MODE] " + log.correction_mode);
 
             if (log.correction_enabled && !log.raw_transcript.empty()) {
+                diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Correction, "correction begin");
                 CorrectionRunInfo info;
                 if (correct_transcript_text_with_info(
                         log.raw_transcript, log.formatted_text, log.correction_error, &info) &&
@@ -277,6 +330,13 @@ private:
                     }
                     debug_line("[FORMATTED_TEXT] " + log.formatted_text);
                     debug_line("[CORRECTION_APPLIED] true");
+                    diagnostics::set_correction_applied(session_id_, true);
+                    diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
+                    diagnostics::diag_end(session_id_,
+                                          diagnostics::DiagnosticStage::Correction,
+                                          "correction applied",
+                                          true,
+                                          true);
                 } else {
                     if (!info.correction_mode.empty()) {
                         log.correction_mode = info.correction_mode;
@@ -295,12 +355,30 @@ private:
                     }
                     debug_line("[CORRECTION_FAILED] " + log.correction_error, true);
                     debug_line("[CORRECTION_APPLIED] false");
+                    diagnostics::set_correction_applied(session_id_, false);
+                    diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
+                    diagnostics::diag_end(session_id_,
+                                          diagnostics::DiagnosticStage::Correction,
+                                          log.correction_error.empty() ? "correction skipped" : log.correction_error,
+                                          true,
+                                          false);
                 }
             } else if (!log.raw_transcript.empty()) {
                 debug_line("[CORRECTION_APPLIED] false");
+                diagnostics::set_correction_applied(session_id_, false);
+                diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::Correction, "correction not used");
             }
 
+            diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Sanitization, "sanitize output");
+            output_text = sanitize_payload_text(output_text);
+            diagnostics::diag_end(session_id_,
+                                  diagnostics::DiagnosticStage::Sanitization,
+                                  output_text.empty() ? "no output after sanitization" : "sanitized output",
+                                  true,
+                                  !output_text.empty());
+
             if (!output_text.empty()) {
+                diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Paste, "paste begin");
                 HWND current = GetForegroundWindow();
                 const bool target_valid = target_window_ && IsWindow(target_window_) && IsWindowVisible(target_window_);
 
@@ -308,28 +386,46 @@ private:
                     log.paste_skipped = true;
                     log.paste_error = "Target window is no longer valid/visible.";
                     debug_line("[PASTE_SKIPPED] " + log.paste_error, true);
+                    diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Skipped);
+                    diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, log.paste_error, true, false);
                 } else if (current != target_window_) {
                     log.paste_skipped = true;
                     log.paste_error = "Focus changed; paste skipped to avoid disruptive window changes.";
                     debug_line("[PASTE_SKIPPED] " + log.paste_error, true);
+                    diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Skipped);
+                    diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, log.paste_error, true, false);
                 } else {
                     std::string inject_error;
                     if (!inject_text_via_clipboard_paste(target_window_, output_text, inject_error)) {
                         log.paste_failed = true;
                         log.paste_error = inject_error;
                         debug_line("[PASTE_FAILED] " + inject_error, true);
+                        diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Failed);
+                        diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, inject_error, true, false);
                     } else {
                         log.paste_done = true;
                         debug_line("[PASTE_DONE]");
+                        diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Done);
+                        diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, "paste done", true, true);
                     }
                 }
             } else if (log.transcribe_error.empty()) {
                 log.paste_skipped = true;
                 log.paste_error = "No transcript text available for paste.";
                 debug_line("[PASTE_SKIPPED] " + log.paste_error);
+                diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Skipped);
+                diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::Paste, log.paste_error, true, false);
+            } else {
+                diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Skipped);
+                diagnostics::diag_point(session_id_,
+                                        diagnostics::DiagnosticStage::Paste,
+                                        "paste skipped due to transcription failure",
+                                        true,
+                                        false);
             }
 
             append_log(log_path, log);
+            diagnostics::finish_session(session_id_, "session complete");
             PostMessageW(window_, WM_TRANSCRIBE_DONE, 0, 0);
         });
     }
@@ -404,12 +500,16 @@ private:
     void set_state(const wchar_t* state) {
         state_text_ = state;
         std::string state_marker = "Transcribing";
+        diagnostics::LiveState diag_state = diagnostics::LiveState::Transcribing;
         if (std::wcscmp(state, L"Idle") == 0) {
             state_marker = "Idle";
+            diag_state = diagnostics::LiveState::Idle;
         } else if (std::wcscmp(state, L"Recording") == 0) {
             state_marker = "Recording";
+            diag_state = diagnostics::LiveState::Recording;
         }
         debug_line("[LIVE_STATE] " + state_marker);
+        diagnostics::set_live_state(diag_state);
         if (!window_) {
             return;
         }
@@ -426,12 +526,20 @@ private:
         if (!menu) {
             return;
         }
+        AppendMenuW(menu, MF_STRING, ID_TRAY_DASHBOARD, L"Dashboard");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit");
         POINT pt;
         GetCursorPos(&pt);
         SetForegroundWindow(window_);
         TrackPopupMenu(menu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, window_, nullptr);
         DestroyMenu(menu);
+    }
+
+    void open_dashboard() {
+        if (!dashboard::show_dashboard_window(window_, debug_console_)) {
+            debug_line("[DASHBOARD_OPEN_FAILED]", true);
+        }
     }
 
     void request_exit() {
@@ -446,6 +554,7 @@ private:
             worker_.join();
             transcribing_.store(false);
         }
+        dashboard::close_dashboard_window();
         DestroyWindow(window_);
     }
 
@@ -470,6 +579,7 @@ private:
     bool recording_ = false;
     bool shutting_down_ = false;
     bool debug_console_ = false;
+    uint64_t session_id_ = 0;
 };
 
 }  // namespace
