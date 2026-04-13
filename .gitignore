@@ -1,13 +1,15 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.python-version
 .vscode/
 .idea/
 .DS_Store
 
 runtime.local.json
+
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
 
 *.ckpt
 *.pt

@@ -1,9 +1,21 @@
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $Python)) { $Python = "py -3.12" }
+Set-Location $RepoRoot
 
-if ($Python -is [string] -and $Python.StartsWith("py ")) {
-    & py -3.12 -m local_tts.cli
+$BuildDir = Join-Path $RepoRoot "build"
+cmake -S $RepoRoot -B $BuildDir
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+cmake --build $BuildDir --config Release
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$exeRelease = Join-Path $BuildDir "Release\local_tts.exe"
+$exeFlat = Join-Path $BuildDir "local_tts.exe"
+
+if (Test-Path $exeRelease) {
+    & $exeRelease
+} elseif (Test-Path $exeFlat) {
+    & $exeFlat
 } else {
-    & $Python -m local_tts.cli
+    Write-Error "local_tts executable not found in expected build locations."
+    exit 1
 }
