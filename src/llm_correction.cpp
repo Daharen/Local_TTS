@@ -6,7 +6,6 @@
 #include <cctype>
 #include <filesystem>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -113,50 +112,46 @@ bool resolve_llama_inputs(std::filesystem::path& llama_exe, std::filesystem::pat
     return true;
 }
 
-std::string build_prompt(const std::string& raw_text) {
+std::string build_system_prompt() {
     const std::string mode = normalized_correction_mode();
     if (mode == "notes") {
-        std::ostringstream prompt;
-        prompt << "You are an AI assistant turning speech-to-text transcription into clean readable notes.\n\n"
-               << "Task:\n"
-               << "- Fix grammar, punctuation, capitalization, and spacing.\n"
-               << "- Remove filler words, filled pauses, and hesitation artifacts.\n"
-               << "- Preserve meaning.\n"
-               << "- Improve readability with paragraph breaks and line breaks.\n"
-               << "- Use bullets, indentation, or list structure when the spoken content clearly supports it.\n"
-               << "- Avoid giant monotonous blocks of text.\n"
-               << "- Do not invent content.\n"
-               << "- Do not explain anything.\n"
-               << "- Output only the final formatted notes.\n\n"
-               << "Transcript:\n"
-               << raw_text;
-        return prompt.str();
+        return "You are an AI assistant turning speech-to-text transcription into clean readable notes.\n\n"
+               "Task:\n"
+               "- Fix grammar, punctuation, capitalization, and spacing.\n"
+               "- Remove filler words, filled pauses, and hesitation artifacts.\n"
+               "- Preserve meaning.\n"
+               "- Improve readability with paragraph breaks and line breaks.\n"
+               "- Use bullets, indentation, or list structure when the spoken content clearly supports it.\n"
+               "- Avoid giant monotonous blocks of text.\n"
+               "- Do not invent content.\n"
+               "- Do not explain anything.\n"
+               "- Output only the final formatted notes.";
     }
 
-    std::ostringstream prompt;
-    prompt << "You are an AI assistant cleaning and formatting speech-to-text transcription output.\n\n"
-           << "Task:\n"
-           << "- Fix grammar, punctuation, capitalization, and spacing errors.\n"
-           << "- Remove filler words, filled pauses, and hesitation artifacts.\n"
-           << "- Correct obvious transcription mistakes conservatively.\n"
-           << "- Preserve the intended meaning.\n"
-           << "- Improve readability with paragraph breaks and line breaks.\n"
-           << "- Use indentation or light structure only when clearly warranted by the content.\n"
-           << "- Avoid giant monotonous blocks of text.\n"
-           << "- Do not add new content.\n"
-           << "- Do not explain anything.\n"
-           << "- Output only the final formatted text.\n\n"
-           << "Correction-speech rule:\n"
-           << "If the speaker corrects themselves, keep only the final intended correction.\n"
-           << "Example:\n"
-           << "Input: \"lets meet at 3PM, oh i mean, 4PM\"\n"
-           << "Output: \"Let's meet at 4 PM.\"\n\n"
-           << "Ambiguity rule:\n"
-           << "If the text is ambiguous, fragmented, or multiple interpretations are plausible, preserve the original "
-              "wording as much as possible rather than inventing a new meaning.\n\n"
-           << "Transcript:\n"
-           << raw_text;
-    return prompt.str();
+    return "You are an AI assistant cleaning and formatting speech-to-text transcription output.\n\n"
+           "Task:\n"
+           "- Fix grammar, punctuation, capitalization, and spacing errors.\n"
+           "- Remove filler words, filled pauses, and hesitation artifacts.\n"
+           "- Correct obvious transcription mistakes conservatively.\n"
+           "- Preserve the intended meaning.\n"
+           "- Improve readability with paragraph breaks and line breaks.\n"
+           "- Use indentation or light structure only when clearly warranted by the content.\n"
+           "- Avoid giant monotonous blocks of text.\n"
+           "- Do not add new content.\n"
+           "- Do not explain anything.\n"
+           "- Output only the final formatted text.\n\n"
+           "Correction-speech rule:\n"
+           "If the speaker corrects themselves, keep only the final intended correction.\n"
+           "Example:\n"
+           "Input: \"lets meet at 3PM, oh i mean, 4PM\"\n"
+           "Output: \"Let's meet at 4 PM.\"\n\n"
+           "Ambiguity rule:\n"
+           "If the text is ambiguous, fragmented, or multiple interpretations are plausible, preserve the original "
+           "wording as much as possible rather than inventing a new meaning.";
+}
+
+std::string build_user_prompt(const std::string& raw_text) {
+    return "Transcript:\n" + raw_text;
 }
 
 #ifdef _WIN32
@@ -237,10 +232,12 @@ bool read_handle_all(HANDLE handle, std::string& out) {
 
 bool run_llama_cli(const std::filesystem::path& exe,
                    const std::filesystem::path& model,
-                   const std::string& prompt,
+                   const std::string& system_prompt,
+                   const std::string& user_prompt,
                    std::string& stdout_out,
                    std::string& stderr_out,
-                   std::string& error_out) {
+                   std::string& error_out,
+                   bool with_reasoning_flag) {
     stdout_out.clear();
     stderr_out.clear();
 
@@ -252,6 +249,7 @@ bool run_llama_cli(const std::filesystem::path& exe,
     HANDLE stdout_write = nullptr;
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
+    HANDLE stdin_null = INVALID_HANDLE_VALUE;
 
     if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)) {
         error_out = "Failed to create llama stdout pipe.";
@@ -268,7 +266,8 @@ bool run_llama_cli(const std::filesystem::path& exe,
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    stdin_null = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    si.hStdInput = (stdin_null != INVALID_HANDLE_VALUE) ? stdin_null : GetStdHandle(STD_INPUT_HANDLE);
     si.hStdOutput = stdout_write;
     si.hStdError = stderr_write;
 
@@ -284,10 +283,19 @@ bool run_llama_cli(const std::filesystem::path& exe,
                                       number_to_wide(get_correction_top_p()),
                                       L"--min-p",
                                       number_to_wide(get_correction_min_p()),
+                                      L"--single-turn",
+                                      L"--no-display-prompt",
+                                      L"--simple-io",
                                       L"-n",
                                       L"128",
+                                      L"-sys",
+                                      utf8_to_wide(system_prompt),
                                       L"-p",
-                                      utf8_to_wide(prompt)};
+                                      utf8_to_wide(user_prompt)};
+    if (with_reasoning_flag) {
+        args.push_back(L"--reasoning");
+        args.push_back(L"off");
+    }
 
     std::wstring cmd_string = build_command_line(args);
     std::vector<wchar_t> cmdline(cmd_string.begin(), cmd_string.end());
@@ -306,6 +314,9 @@ bool run_llama_cli(const std::filesystem::path& exe,
 
     CloseHandle(stdout_write);
     CloseHandle(stderr_write);
+    if (stdin_null != INVALID_HANDLE_VALUE) {
+        CloseHandle(stdin_null);
+    }
 
     if (!launched) {
         CloseHandle(stdout_read);
@@ -373,7 +384,11 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
 
     std::string stdout_text;
     std::string stderr_text;
-    if (!run_llama_cli(llama_exe, llama_model, build_prompt(raw_trimmed), stdout_text, stderr_text, error_out)) {
+    const std::string system_prompt = build_system_prompt();
+    const std::string user_prompt = build_user_prompt(raw_trimmed);
+    if (!run_llama_cli(
+            llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, true) &&
+        !run_llama_cli(llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false)) {
         return false;
     }
 
