@@ -1,6 +1,7 @@
 #include "live_mode.h"
 
 #include "audio_capture.h"
+#include "llm_correction.h"
 #include "paths.h"
 #include "text_injection.h"
 #include "whisper_runner.h"
@@ -67,6 +68,16 @@ public:
     }
 
 private:
+    struct LogPayload {
+        bool correction_enabled = false;
+        bool correction_applied = false;
+        std::string raw_transcript;
+        std::string corrected_transcript;
+        std::string transcribe_error;
+        std::string correction_error;
+        std::string paste_diag;
+    };
+
     bool create_window() {
         HINSTANCE inst = GetModuleHandleW(nullptr);
 
@@ -176,22 +187,30 @@ private:
             const auto wav_path = large_root / "temp" / "live" / (now_stamp_for_file() + ".wav");
             const auto log_path = large_root / "output" / "live_transcripts" / "session.txt";
 
-            std::string transcript;
-            std::string transcribe_error;
-            std::string paste_diag;
+            LogPayload log;
+            log.correction_enabled = is_correction_enabled();
 
             if (!capture_.write_wav(wav_path)) {
-                transcribe_error = "Failed to write WAV file.";
+                log.transcribe_error = "Failed to write WAV file.";
             } else {
-                transcribe_file_to_string(wav_path, transcript, transcribe_error);
+                transcribe_file_to_string(wav_path, log.raw_transcript, log.transcribe_error);
             }
 
-            if (!transcript.empty()) {
+            std::string output_text = log.raw_transcript;
+            if (log.correction_enabled && !log.raw_transcript.empty()) {
+                if (correct_transcript_text(log.raw_transcript, log.corrected_transcript, log.correction_error) &&
+                    !log.corrected_transcript.empty()) {
+                    output_text = log.corrected_transcript;
+                    log.correction_applied = true;
+                }
+            }
+
+            if (!output_text.empty()) {
                 HWND current = GetForegroundWindow();
                 const bool target_valid = target_window_ && IsWindow(target_window_) && IsWindowVisible(target_window_);
 
                 if (!target_valid) {
-                    paste_diag = "[PASTE_SKIPPED] Target window is no longer valid/visible.";
+                    log.paste_diag = "[PASTE_SKIPPED] Target window is no longer valid/visible.";
                 } else {
                     if (current != target_window_) {
                         SetForegroundWindow(target_window_);
@@ -201,22 +220,21 @@ private:
 
                     if (current == target_window_) {
                         std::string inject_error;
-                        if (!inject_text_via_clipboard_paste(target_window_, transcript, inject_error)) {
-                            paste_diag = "[PASTE_FAILED] " + inject_error;
+                        if (!inject_text_via_clipboard_paste(target_window_, output_text, inject_error)) {
+                            log.paste_diag = "[PASTE_FAILED] " + inject_error;
                         }
                     } else {
-                        paste_diag = "[PASTE_SKIPPED] Focus changed; paste skipped to avoid disruptive window changes.";
+                        log.paste_diag = "[PASTE_SKIPPED] Focus changed; paste skipped to avoid disruptive window changes.";
                     }
                 }
             }
-            append_log(log_path, transcript, transcribe_error, paste_diag);
 
+            append_log(log_path, log);
             PostMessageW(window_, WM_TRANSCRIBE_DONE, 0, 0);
         });
     }
 
-    void append_log(const std::filesystem::path& log_path, const std::string& transcript, const std::string& error,
-                    const std::string& paste_diag) {
+    void append_log(const std::filesystem::path& log_path, const LogPayload& log) {
         std::filesystem::create_directories(log_path.parent_path());
         std::ofstream out(log_path, std::ios::app);
         if (!out) {
@@ -224,18 +242,29 @@ private:
         }
 
         out << "---- [" << now_stamp_readable() << "] ----\n";
-        if (!transcript.empty()) {
-            out << transcript << "\n";
-            if (!paste_diag.empty()) {
-                out << paste_diag << "\n";
+        out << "correction_enabled=" << (log.correction_enabled ? "true" : "false") << "\n";
+
+        if (!log.raw_transcript.empty()) {
+            out << "raw: " << log.raw_transcript << "\n";
+            if (!log.corrected_transcript.empty()) {
+                out << "corrected: " << log.corrected_transcript << "\n";
+            }
+            out << "correction_applied=" << (log.correction_applied ? "true" : "false") << "\n";
+            if (!log.correction_error.empty()) {
+                out << "[CORRECTION_FAILED] " << log.correction_error << "\n";
+            }
+            if (!log.paste_diag.empty()) {
+                out << log.paste_diag << "\n";
             }
             out << "\n";
             return;
         }
-        if (!error.empty()) {
-            out << "[ERROR] " << error << "\n\n";
+
+        if (!log.transcribe_error.empty()) {
+            out << "[ERROR] " << log.transcribe_error << "\n\n";
             return;
         }
+
         out << "[EMPTY]\n\n";
     }
 

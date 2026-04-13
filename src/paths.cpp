@@ -56,28 +56,36 @@ std::string parse_json_string_at(const std::string& text, std::size_t start_quot
     return {};
 }
 
-std::string find_json_string_value(const std::string& json, const std::string& key_name) {
+std::string find_json_value_token(const std::string& json, const std::string& key_name) {
     const std::string key = "\"" + key_name + "\"";
     const auto key_pos = json.find(key);
     if (key_pos == std::string::npos) {
         return {};
     }
 
-    auto colon_pos = json.find(':', key_pos + key.size());
-    if (colon_pos == std::string::npos) {
+    auto value_pos = json.find(':', key_pos + key.size());
+    if (value_pos == std::string::npos) {
         return {};
     }
 
-    ++colon_pos;
-    while (colon_pos < json.size() && (json[colon_pos] == ' ' || json[colon_pos] == '\t' || json[colon_pos] == '\r' || json[colon_pos] == '\n')) {
-        ++colon_pos;
+    ++value_pos;
+    while (value_pos < json.size() && (json[value_pos] == ' ' || json[value_pos] == '\t' || json[value_pos] == '\r' || json[value_pos] == '\n')) {
+        ++value_pos;
     }
 
-    if (colon_pos >= json.size() || json[colon_pos] != '"') {
+    if (value_pos >= json.size()) {
         return {};
     }
 
-    return parse_json_string_at(json, colon_pos);
+    if (json[value_pos] == '"') {
+        return parse_json_string_at(json, value_pos);
+    }
+
+    const auto value_end = json.find_first_of(",}\r\n\t ", value_pos);
+    if (value_end == std::string::npos) {
+        return trim_copy(json.substr(value_pos));
+    }
+    return trim_copy(json.substr(value_pos, value_end - value_pos));
 }
 
 std::string escape_json(const std::string& input) {
@@ -103,7 +111,39 @@ std::string read_runtime_value(const std::string& key_name) {
     if (config_content.empty()) {
         return {};
     }
-    return trim_copy(find_json_string_value(config_content, key_name));
+    return trim_copy(find_json_value_token(config_content, key_name));
+}
+
+bool parse_bool_value(const std::string& value, bool fallback) {
+    if (value == "true") {
+        return true;
+    }
+    if (value == "false") {
+        return false;
+    }
+    return fallback;
+}
+
+int parse_int_value(const std::string& value, int fallback) {
+    if (value.empty()) {
+        return fallback;
+    }
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return fallback;
+    }
+}
+
+double parse_double_value(const std::string& value, double fallback) {
+    if (value.empty()) {
+        return fallback;
+    }
+    try {
+        return std::stod(value);
+    } catch (...) {
+        return fallback;
+    }
 }
 
 }  // namespace
@@ -162,18 +202,128 @@ std::filesystem::path get_whisper_model_path() {
     return get_large_data_root() / "models" / "whisper.cpp" / "ggml-base.en.bin";
 }
 
+std::filesystem::path get_llama_cpp_root() {
+    const std::filesystem::path fallback = R"(F:\Qwen3.5-27B\llama.cpp)";
+
+    const auto from_runtime = read_runtime_value("llama_cpp_root");
+    if (!from_runtime.empty()) {
+        return std::filesystem::path(from_runtime);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_LLAMA_CPP_ROOT")) {
+        const auto from_env = trim_copy(env);
+        if (!from_env.empty()) {
+            return std::filesystem::path(from_env);
+        }
+    }
+
+    return fallback;
+}
+
+std::filesystem::path get_llama_model_path() {
+    const std::filesystem::path fallback = R"(F:\Qwen3.5-27B\small-model-3b\Qwen2.5-3B-Instruct-IQ4_XS.gguf)";
+
+    const auto from_runtime = read_runtime_value("llama_model_path");
+    if (!from_runtime.empty()) {
+        return std::filesystem::path(from_runtime);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_LLAMA_MODEL_PATH")) {
+        const auto from_env = trim_copy(env);
+        if (!from_env.empty()) {
+            return std::filesystem::path(from_env);
+        }
+    }
+
+    return fallback;
+}
+
+bool is_correction_enabled() {
+    const auto runtime_value = read_runtime_value("correction_enabled");
+    if (!runtime_value.empty()) {
+        return parse_bool_value(runtime_value, false);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_ENABLED")) {
+        return parse_bool_value(trim_copy(env), false);
+    }
+
+    return false;
+}
+
+double get_correction_temperature() {
+    const auto runtime_value = read_runtime_value("correction_temperature");
+    if (!runtime_value.empty()) {
+        return parse_double_value(runtime_value, 0.0);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_TEMPERATURE")) {
+        return parse_double_value(trim_copy(env), 0.0);
+    }
+
+    return 0.0;
+}
+
+int get_correction_top_k() {
+    const auto runtime_value = read_runtime_value("correction_top_k");
+    if (!runtime_value.empty()) {
+        return parse_int_value(runtime_value, 1);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_TOP_K")) {
+        return parse_int_value(trim_copy(env), 1);
+    }
+
+    return 1;
+}
+
+double get_correction_top_p() {
+    const auto runtime_value = read_runtime_value("correction_top_p");
+    if (!runtime_value.empty()) {
+        return parse_double_value(runtime_value, 0.0);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_TOP_P")) {
+        return parse_double_value(trim_copy(env), 0.0);
+    }
+
+    return 0.0;
+}
+
+double get_correction_min_p() {
+    const auto runtime_value = read_runtime_value("correction_min_p");
+    if (!runtime_value.empty()) {
+        return parse_double_value(runtime_value, 0.0);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_MIN_P")) {
+        return parse_double_value(trim_copy(env), 0.0);
+    }
+
+    return 0.0;
+}
+
 std::string describe_paths_json() {
     const auto repo = get_repo_root().string();
     const auto data = get_large_data_root().string();
     const auto whisper_cpp = get_whisper_cpp_root().string();
     const auto whisper_model = get_whisper_model_path().string();
+    const auto llama_cpp = get_llama_cpp_root().string();
+    const auto llama_model = get_llama_model_path().string();
 
     std::ostringstream out;
     out << "{\n"
         << "  \"repo_root\": \"" << escape_json(repo) << "\",\n"
         << "  \"large_data_root\": \"" << escape_json(data) << "\",\n"
         << "  \"whisper_cpp_root\": \"" << escape_json(whisper_cpp) << "\",\n"
-        << "  \"whisper_model_path\": \"" << escape_json(whisper_model) << "\"\n"
+        << "  \"whisper_model_path\": \"" << escape_json(whisper_model) << "\",\n"
+        << "  \"llama_cpp_root\": \"" << escape_json(llama_cpp) << "\",\n"
+        << "  \"llama_model_path\": \"" << escape_json(llama_model) << "\",\n"
+        << "  \"correction_enabled\": " << (is_correction_enabled() ? "true" : "false") << ",\n"
+        << "  \"correction_temperature\": " << get_correction_temperature() << ",\n"
+        << "  \"correction_top_k\": " << get_correction_top_k() << ",\n"
+        << "  \"correction_top_p\": " << get_correction_top_p() << ",\n"
+        << "  \"correction_min_p\": " << get_correction_min_p() << "\n"
         << "}";
     return out.str();
 }
