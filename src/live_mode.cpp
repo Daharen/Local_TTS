@@ -153,6 +153,7 @@ private:
     }
 
     void start_recording() {
+        target_window_ = GetForegroundWindow();
         if (!capture_.start()) {
             set_state(L"Idle");
             return;
@@ -168,7 +169,6 @@ private:
         MessageBeep(MB_ICONASTERISK);
         set_state(L"Transcribing");
 
-        target_window_ = GetForegroundWindow();
         transcribing_.store(true);
 
         worker_ = std::thread([this]() {
@@ -178,6 +178,7 @@ private:
 
             std::string transcript;
             std::string transcribe_error;
+            std::string paste_diag;
 
             if (!capture_.write_wav(wav_path)) {
                 transcribe_error = "Failed to write WAV file.";
@@ -185,17 +186,37 @@ private:
                 transcribe_file_to_string(wav_path, transcript, transcribe_error);
             }
 
-            append_log(log_path, transcript, transcribe_error);
             if (!transcript.empty()) {
-                std::string inject_error;
-                inject_text_via_clipboard_paste(target_window_, transcript, inject_error);
+                HWND current = GetForegroundWindow();
+                const bool target_valid = target_window_ && IsWindow(target_window_) && IsWindowVisible(target_window_);
+
+                if (!target_valid) {
+                    paste_diag = "[PASTE_SKIPPED] Target window is no longer valid/visible.";
+                } else {
+                    if (current != target_window_) {
+                        SetForegroundWindow(target_window_);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                        current = GetForegroundWindow();
+                    }
+
+                    if (current == target_window_) {
+                        std::string inject_error;
+                        if (!inject_text_via_clipboard_paste(target_window_, transcript, inject_error)) {
+                            paste_diag = "[PASTE_FAILED] " + inject_error;
+                        }
+                    } else {
+                        paste_diag = "[PASTE_SKIPPED] Focus changed; paste skipped to avoid disruptive window changes.";
+                    }
+                }
             }
+            append_log(log_path, transcript, transcribe_error, paste_diag);
 
             PostMessageW(window_, WM_TRANSCRIBE_DONE, 0, 0);
         });
     }
 
-    void append_log(const std::filesystem::path& log_path, const std::string& transcript, const std::string& error) {
+    void append_log(const std::filesystem::path& log_path, const std::string& transcript, const std::string& error,
+                    const std::string& paste_diag) {
         std::filesystem::create_directories(log_path.parent_path());
         std::ofstream out(log_path, std::ios::app);
         if (!out) {
@@ -204,7 +225,11 @@ private:
 
         out << "---- [" << now_stamp_readable() << "] ----\n";
         if (!transcript.empty()) {
-            out << transcript << "\n\n";
+            out << transcript << "\n";
+            if (!paste_diag.empty()) {
+                out << paste_diag << "\n";
+            }
+            out << "\n";
             return;
         }
         if (!error.empty()) {
