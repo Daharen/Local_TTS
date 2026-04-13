@@ -6,6 +6,7 @@
 #include <cctype>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -151,7 +152,109 @@ std::string build_system_prompt() {
 }
 
 std::string build_user_prompt(const std::string& raw_text) {
-    return "Transcript:\n" + raw_text;
+    return "Rewrite this speech-to-text transcript into clean final text.\n"
+           "Only output the rewritten text.\n"
+           "Do not include labels, explanations, prompts, or metadata.\n\n"
+           "Transcript:\n" +
+           raw_text;
+}
+
+std::string normalize_newlines(std::string text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\r') {
+            if (i + 1 < text.size() && text[i + 1] == '\n') {
+                continue;
+            }
+            out.push_back('\n');
+            continue;
+        }
+        out.push_back(text[i]);
+    }
+    return out;
+}
+
+bool starts_with(const std::string& value, const std::string& prefix) {
+    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+}
+
+std::string to_lower_copy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+bool is_noise_line(const std::string& line, const std::string& raw_trimmed_lower) {
+    const std::string trimmed = trim_copy(line);
+    if (trimmed.empty()) {
+        return true;
+    }
+
+    const std::string lower = to_lower_copy(trimmed);
+    if (starts_with(trimmed, ">")) {
+        return true;
+    }
+    if (starts_with(lower, "available commands") || starts_with(lower, "write '/' to prefix commands") ||
+        starts_with(lower, "common params:") || starts_with(lower, "sampling params:") ||
+        starts_with(lower, "chat params:") || starts_with(lower, "server listening on")) {
+        return true;
+    }
+    if (starts_with(lower, "main:") || starts_with(lower, "system info") || starts_with(lower, "build:")) {
+        return true;
+    }
+    if (starts_with(lower, "exiting")) {
+        return true;
+    }
+    if (starts_with(trimmed, "[") && trimmed.find(':') != std::string::npos) {
+        return true;
+    }
+    if (lower == "transcript:" || lower == "assistant:" || lower == "user:" || lower == "output:" || lower == "response:") {
+        return true;
+    }
+    if (!raw_trimmed_lower.empty() && lower == raw_trimmed_lower) {
+        return true;
+    }
+    return false;
+}
+
+std::string sanitize_llama_stdout(const std::string& raw_stdout, const std::string& raw_trimmed) {
+    const std::string normalized = normalize_newlines(raw_stdout);
+    const std::string raw_lower = to_lower_copy(trim_copy(raw_trimmed));
+
+    std::vector<std::string> kept_lines;
+    std::string line;
+    std::stringstream stream(normalized);
+    while (std::getline(stream, line)) {
+        if (is_noise_line(line, raw_lower)) {
+            continue;
+        }
+        kept_lines.push_back(trim_copy(line));
+    }
+
+    while (!kept_lines.empty() && trim_copy(kept_lines.front()).empty()) {
+        kept_lines.erase(kept_lines.begin());
+    }
+    while (!kept_lines.empty() && trim_copy(kept_lines.back()).empty()) {
+        kept_lines.pop_back();
+    }
+
+    std::string joined;
+    for (std::size_t i = 0; i < kept_lines.size(); ++i) {
+        if (i > 0) {
+            joined += '\n';
+        }
+        joined += kept_lines[i];
+    }
+    return trim_copy(joined);
+}
+
+std::string compact_debug_excerpt(const std::string& text, std::size_t limit = 320) {
+    std::string normalized = normalize_newlines(text);
+    normalized = trim_copy(normalized);
+    if (normalized.size() <= limit) {
+        return normalized;
+    }
+    return normalized.substr(0, limit) + "...(trimmed)";
 }
 
 #ifdef _WIN32
@@ -237,7 +340,8 @@ bool run_llama_cli(const std::filesystem::path& exe,
                    std::string& stdout_out,
                    std::string& stderr_out,
                    std::string& error_out,
-                   bool with_reasoning_flag) {
+                   bool with_reasoning_flag,
+                   bool with_no_conversation_flag) {
     stdout_out.clear();
     stderr_out.clear();
 
@@ -286,6 +390,8 @@ bool run_llama_cli(const std::filesystem::path& exe,
                                       L"--single-turn",
                                       L"--no-display-prompt",
                                       L"--simple-io",
+                                      L"--log-disable",
+                                      L"--no-warmup",
                                       L"-n",
                                       L"128",
                                       L"-sys",
@@ -295,6 +401,9 @@ bool run_llama_cli(const std::filesystem::path& exe,
     if (with_reasoning_flag) {
         args.push_back(L"--reasoning");
         args.push_back(L"off");
+    }
+    if (with_no_conversation_flag) {
+        args.push_back(L"--no-conversation");
     }
 
     std::wstring cmd_string = build_command_line(args);
@@ -386,15 +495,26 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     std::string stderr_text;
     const std::string system_prompt = build_system_prompt();
     const std::string user_prompt = build_user_prompt(raw_trimmed);
-    if (!run_llama_cli(
-            llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, true) &&
-        !run_llama_cli(llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false)) {
+    if (!run_llama_cli(llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, true, true) &&
+        !run_llama_cli(llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false, true) &&
+        !run_llama_cli(
+            llama_exe, llama_model, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false, false)) {
         return false;
     }
 
-    corrected_text = trim_copy(stdout_text);
+    corrected_text = sanitize_llama_stdout(stdout_text, raw_trimmed);
+    if (info_out) {
+        info_out->raw_stdout = compact_debug_excerpt(stdout_text);
+        info_out->clean_output = corrected_text;
+    }
+
     if (corrected_text.empty() || looks_like_meta_output(corrected_text)) {
-        error_out = "Correction output was empty or non-transcript.";
+        error_out = "Correction output was empty or unusable after sanitization.";
+        return false;
+    }
+
+    if (trim_copy(corrected_text) == raw_trimmed) {
+        error_out = "Correction output matched raw transcript.";
         return false;
     }
 
@@ -426,6 +546,12 @@ int run_llm_test_command(const std::string& input_text) {
     std::cout << "[LLM_TEST_MODEL] " << info.llama_model.string() << "\n";
     std::cout << "[LLM_TEST_EXE] " << info.llama_exe.string() << "\n";
     std::cout << "[LLM_TEST_MODE] " << normalized_correction_mode() << "\n";
+    if (!info.raw_stdout.empty() && info.raw_stdout != info.clean_output) {
+        std::cout << "[LLM_TEST_RAW_STDOUT] " << info.raw_stdout << "\n";
+    }
+    if (!info.clean_output.empty()) {
+        std::cout << "[LLM_TEST_CLEAN_OUTPUT] " << info.clean_output << "\n";
+    }
 
     if (!ok) {
         std::cout << "[LLM_TEST_ERROR] " << error << "\n";
