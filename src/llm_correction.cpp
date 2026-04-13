@@ -160,8 +160,64 @@ std::string build_prompt(const std::string& raw_text) {
 }
 
 #ifdef _WIN32
-std::wstring quote_arg(const std::wstring& arg) {
-    return L"\"" + arg + L"\"";
+std::wstring utf8_to_wide(const std::string& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0);
+    if (needed <= 0) {
+        return {};
+    }
+    std::wstring out(static_cast<std::size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), out.data(), needed);
+    return out;
+}
+
+std::wstring quote_windows_arg(const std::wstring& arg) {
+    std::wstring out;
+    out.push_back(L'"');
+    std::size_t backslashes = 0;
+    for (wchar_t ch : arg) {
+        if (ch == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (ch == L'"') {
+            out.append(backslashes * 2 + 1, L'\\');
+            out.push_back(L'"');
+            backslashes = 0;
+            continue;
+        }
+        if (backslashes > 0) {
+            out.append(backslashes, L'\\');
+            backslashes = 0;
+        }
+        out.push_back(ch);
+    }
+    if (backslashes > 0) {
+        out.append(backslashes * 2, L'\\');
+    }
+    out.push_back(L'"');
+    return out;
+}
+
+std::wstring build_command_line(const std::vector<std::wstring>& args) {
+    std::wstring out;
+    bool first = true;
+    for (const auto& arg : args) {
+        if (!first) {
+            out.push_back(L' ');
+        }
+        first = false;
+        out += quote_windows_arg(arg);
+    }
+    return out;
+}
+
+std::string first_line(const std::string& text) {
+    const std::string trimmed = trim_copy(text);
+    const auto pos = trimmed.find_first_of("\r\n");
+    return trim_copy(pos == std::string::npos ? trimmed : trimmed.substr(0, pos));
 }
 
 bool read_handle_all(HANDLE handle, std::string& out) {
@@ -212,17 +268,23 @@ bool run_llama_cli(const std::filesystem::path& exe,
     si.hStdError = stderr_write;
 
     PROCESS_INFORMATION pi{};
-    std::wostringstream cmd;
-    cmd << quote_arg(exe.wstring())
-        << L" -m " << quote_arg(model.wstring())
-        << L" --temp " << get_correction_temperature()
-        << L" --top-k " << get_correction_top_k()
-        << L" --top-p " << get_correction_top_p()
-        << L" --min-p " << get_correction_min_p()
-        << L" -n 128"
-        << L" -p " << quote_arg(std::wstring(prompt.begin(), prompt.end()));
+    std::vector<std::wstring> args = {exe.wstring(),
+                                      L"-m",
+                                      model.wstring(),
+                                      L"--temp",
+                                      utf8_to_wide(get_correction_temperature()),
+                                      L"--top-k",
+                                      utf8_to_wide(get_correction_top_k()),
+                                      L"--top-p",
+                                      utf8_to_wide(get_correction_top_p()),
+                                      L"--min-p",
+                                      utf8_to_wide(get_correction_min_p()),
+                                      L"-n",
+                                      L"128",
+                                      L"-p",
+                                      utf8_to_wide(prompt)};
 
-    std::wstring cmd_string = cmd.str();
+    std::wstring cmd_string = build_command_line(args);
     std::vector<wchar_t> cmdline(cmd_string.begin(), cmd_string.end());
     cmdline.push_back(L'\0');
 
@@ -260,9 +322,12 @@ bool run_llama_cli(const std::filesystem::path& exe,
     CloseHandle(pi.hProcess);
 
     if (exit_code != 0) {
-        error_out = trim_copy(stderr_out);
+        error_out = first_line(stderr_out);
         if (error_out.empty()) {
-            error_out = "llama-cli failed with non-zero exit code.";
+            error_out = first_line(stdout_out);
+        }
+        if (error_out.empty()) {
+            error_out = "llama-cli failed with non-zero exit code: " + std::to_string(static_cast<unsigned long>(exit_code));
         }
         return false;
     }
@@ -348,5 +413,6 @@ int run_llm_test_command(const std::string& input_text) {
     }
 
     std::cout << "[LLM_TEST_OUTPUT] " << corrected << "\n";
+    std::cout << "[LLM_TEST_ERROR] " << "\n";
     return 0;
 }
