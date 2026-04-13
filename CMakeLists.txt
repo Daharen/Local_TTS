@@ -12,6 +12,7 @@ add_executable(local_tts
     src/live_mode.cpp
     src/audio_capture.cpp
     src/text_injection.cpp
+    src/llm_correction.cpp
 )
 
 if(WIN32)

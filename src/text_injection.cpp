@@ -2,8 +2,8 @@
 
 #ifdef _WIN32
 
-#include <chrono>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -71,7 +71,15 @@ bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8
         return false;
     }
 
-    (void)target_window;
+    if (!target_window || !IsWindow(target_window) || !IsWindowVisible(target_window)) {
+        error_out = "Target window is invalid.";
+        return false;
+    }
+
+    if (GetForegroundWindow() != target_window) {
+        error_out = "Target window is not foreground; skipping non-disruptive paste.";
+        return false;
+    }
 
     if (!OpenClipboard(nullptr)) {
         error_out = "Failed to open clipboard.";
