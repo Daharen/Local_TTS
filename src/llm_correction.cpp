@@ -210,68 +210,163 @@ std::string to_lower_copy(std::string text) {
     return text;
 }
 
-bool is_noise_line(const std::string& line, const std::string& raw_trimmed_lower) {
-    const std::string trimmed = trim_copy(line);
-    if (trimmed.empty()) {
-        return true;
+std::vector<std::string> split_lines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::string line;
+    std::stringstream stream(text);
+    while (std::getline(stream, line)) {
+        lines.push_back(line);
     }
+    return lines;
+}
 
-    const std::string lower = to_lower_copy(trimmed);
-    if (starts_with(trimmed, ">")) {
+std::string collapse_space_copy(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    bool in_space = false;
+    for (unsigned char ch : text) {
+        if (std::isspace(ch)) {
+            if (!in_space) {
+                out.push_back(' ');
+                in_space = true;
+            }
+            continue;
+        }
+        out.push_back(static_cast<char>(std::tolower(ch)));
+        in_space = false;
+    }
+    return trim_copy(out);
+}
+
+bool is_banner_line(const std::string& line_lower) {
+    return starts_with(line_lower, "loading model") || starts_with(line_lower, "build") || starts_with(line_lower, "model") ||
+           starts_with(line_lower, "modalities") || starts_with(line_lower, "using custom system prompt") ||
+           starts_with(line_lower, "ggml_") || starts_with(line_lower, "main:") || starts_with(line_lower, "system info");
+}
+
+bool is_shell_help_line(const std::string& line, const std::string& line_lower) {
+    return starts_with(line, "/") || starts_with(line_lower, "available commands") ||
+           starts_with(line_lower, "write '/' to prefix commands") || starts_with(line_lower, "common params:") ||
+           starts_with(line_lower, "sampling params:") || starts_with(line_lower, "chat params:") ||
+           starts_with(line_lower, "server listening on") || starts_with(line_lower, "ctrl+c");
+}
+
+bool is_footer_line(const std::string& line, const std::string& line_lower) {
+    if (starts_with(line_lower, "exiting")) {
         return true;
     }
-    if (starts_with(lower, "available commands") || starts_with(lower, "write '/' to prefix commands") ||
-        starts_with(lower, "common params:") || starts_with(lower, "sampling params:") ||
-        starts_with(lower, "chat params:") || starts_with(lower, "server listening on")) {
-        return true;
-    }
-    if (starts_with(lower, "main:") || starts_with(lower, "system info") || starts_with(lower, "build:")) {
-        return true;
-    }
-    if (starts_with(lower, "exiting")) {
-        return true;
-    }
-    if (starts_with(trimmed, "[") && trimmed.find(':') != std::string::npos) {
-        return true;
-    }
-    if (lower == "transcript:" || lower == "assistant:" || lower == "user:" || lower == "output:" || lower == "response:") {
-        return true;
-    }
-    if (!raw_trimmed_lower.empty() && lower == raw_trimmed_lower) {
-        return true;
+    if (starts_with(line, "[") && !line.empty() && line.back() == ']') {
+        const std::string lower = line_lower;
+        return lower.find("prompt:") != std::string::npos || lower.find("generation:") != std::string::npos ||
+               lower.find("tokens/s") != std::string::npos || lower.find("tok/s") != std::string::npos ||
+               lower.find("time") != std::string::npos;
     }
     return false;
 }
 
+bool is_prompt_echo_line(const std::string& line, const std::string& line_lower) {
+    return starts_with(line, ">") || line_lower == "transcript:" || line_lower == "assistant:" || line_lower == "user:" ||
+           line_lower == "output:" || line_lower == "response:" ||
+           line_lower == "rewrite this speech-to-text transcript into clean final text." ||
+           line_lower == "only output the rewritten text." ||
+           line_lower == "do not include labels, explanations, prompts, or metadata.";
+}
+
+bool is_raw_transcript_echo_line(const std::string& line_norm, const std::string& raw_norm, const std::string& raw_single_line_norm) {
+    if (line_norm.empty() || raw_norm.empty()) {
+        return false;
+    }
+    return line_norm == raw_norm || line_norm == raw_single_line_norm ||
+           (!line_norm.empty() && raw_norm.find(line_norm) != std::string::npos);
+}
+
+bool has_meaningful_text(const std::string& text) {
+    return std::any_of(text.begin(), text.end(), [](unsigned char ch) { return std::isalnum(ch); });
+}
+
+bool is_candidate_payload_line(const std::string& line,
+                               const std::string& line_lower,
+                               const std::string& line_norm,
+                               const std::string& raw_norm,
+                               const std::string& raw_single_line_norm) {
+    if (line.empty()) {
+        return false;
+    }
+    if (is_banner_line(line_lower) || is_shell_help_line(line, line_lower) || is_footer_line(line, line_lower) ||
+        is_prompt_echo_line(line, line_lower) || is_raw_transcript_echo_line(line_norm, raw_norm, raw_single_line_norm)) {
+        return false;
+    }
+    return true;
+}
+
+bool block_matches_raw_transcript(const std::string& block, const std::string& raw_trimmed) {
+    const std::string block_norm = collapse_space_copy(normalize_newlines(block));
+    const std::string raw_norm = collapse_space_copy(normalize_newlines(raw_trimmed));
+    return !block_norm.empty() && block_norm == raw_norm;
+}
+
 std::string sanitize_llama_stdout(const std::string& raw_stdout, const std::string& raw_trimmed) {
     const std::string normalized = normalize_newlines(raw_stdout);
-    const std::string raw_lower = to_lower_copy(trim_copy(raw_trimmed));
+    const std::string raw_norm = collapse_space_copy(raw_trimmed);
+    std::string raw_single_line = raw_trimmed;
+    std::replace(raw_single_line.begin(), raw_single_line.end(), '\n', ' ');
+    const std::string raw_single_line_norm = collapse_space_copy(raw_single_line);
 
-    std::vector<std::string> kept_lines;
-    std::string line;
-    std::stringstream stream(normalized);
-    while (std::getline(stream, line)) {
-        if (is_noise_line(line, raw_lower)) {
+    std::vector<std::string> candidate_lines;
+    for (const std::string& raw_line : split_lines(normalized)) {
+        const std::string line = trim_copy(raw_line);
+        if (line.empty()) {
+            if (!candidate_lines.empty() && !candidate_lines.back().empty()) {
+                candidate_lines.emplace_back();
+            }
             continue;
         }
-        kept_lines.push_back(trim_copy(line));
-    }
-
-    while (!kept_lines.empty() && trim_copy(kept_lines.front()).empty()) {
-        kept_lines.erase(kept_lines.begin());
-    }
-    while (!kept_lines.empty() && trim_copy(kept_lines.back()).empty()) {
-        kept_lines.pop_back();
-    }
-
-    std::string joined;
-    for (std::size_t i = 0; i < kept_lines.size(); ++i) {
-        if (i > 0) {
-            joined += '\n';
+        const std::string lower = to_lower_copy(line);
+        const std::string line_norm = collapse_space_copy(line);
+        if (is_candidate_payload_line(line, lower, line_norm, raw_norm, raw_single_line_norm)) {
+            candidate_lines.push_back(line);
         }
-        joined += kept_lines[i];
     }
-    return trim_copy(joined);
+
+    while (!candidate_lines.empty() && candidate_lines.back().empty()) {
+        candidate_lines.pop_back();
+    }
+
+    std::vector<std::string> blocks;
+    std::string current;
+    for (const auto& line : candidate_lines) {
+        if (line.empty()) {
+            if (!current.empty()) {
+                blocks.push_back(trim_copy(current));
+                current.clear();
+            }
+            continue;
+        }
+        if (!current.empty()) {
+            current.push_back('\n');
+        }
+        current += line;
+    }
+    if (!current.empty()) {
+        blocks.push_back(trim_copy(current));
+    }
+
+    for (auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+        const std::string block = trim_copy(*it);
+        if (!has_meaningful_text(block)) {
+            continue;
+        }
+        const std::string lower = to_lower_copy(block);
+        if (is_prompt_echo_line(block, lower) || is_shell_help_line(block, lower) || is_footer_line(block, lower)) {
+            continue;
+        }
+        if (block_matches_raw_transcript(block, raw_trimmed)) {
+            continue;
+        }
+        return block;
+    }
+
+    return {};
 }
 
 std::string compact_debug_excerpt(const std::string& text, std::size_t limit = 320) {
@@ -577,7 +672,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
         return false;
     }
 
-    if (trim_copy(corrected_text) == raw_trimmed) {
+    if (block_matches_raw_transcript(corrected_text, raw_trimmed)) {
         error_out = "Correction output matched raw transcript.";
         return false;
     }
