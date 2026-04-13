@@ -10,6 +10,9 @@
 namespace dashboard {
 namespace {
 
+class DashboardWindow;
+DashboardWindow* g_instance = nullptr;
+
 class DashboardWindow {
 public:
     explicit DashboardWindow(bool debug_console) : debug_console_(debug_console) {}
@@ -180,8 +183,6 @@ private:
     HWND edit_ = nullptr;
     bool debug_console_ = false;
 };
-
-DashboardWindow* g_instance = nullptr;
 
 }  // namespace
 
