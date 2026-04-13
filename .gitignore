@@ -3,6 +3,8 @@
 .DS_Store
 
 runtime.local.json
+# Optional machine-local runtime override
+
 
 build/
 CMakeFiles/
