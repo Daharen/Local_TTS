@@ -85,6 +85,12 @@ struct DiagnosticsSnapshot {
     std::vector<DiagnosticEvent> recent_events;
 };
 
+#ifndef LOCAL_TTS_ENABLE_DASHBOARD
+#define LOCAL_TTS_ENABLE_DASHBOARD 1
+#endif
+
+#if LOCAL_TTS_ENABLE_DASHBOARD
+
 UINT dashboard_update_message() noexcept;
 
 void set_live_state(LiveState state) noexcept;
@@ -119,5 +125,28 @@ const char* stage_name(DiagnosticStage stage) noexcept;
 const char* event_kind_name(DiagnosticEventKind kind) noexcept;
 const char* live_state_name(LiveState state) noexcept;
 const char* paste_outcome_name(PasteOutcome outcome) noexcept;
+
+#else
+
+inline UINT dashboard_update_message() noexcept { return 0; }
+inline void set_live_state(LiveState) noexcept {}
+inline uint64_t begin_session() noexcept { return 0; }
+inline void finish_session(uint64_t, const std::string& = std::string()) noexcept {}
+inline void diag_point(uint64_t, DiagnosticStage, const std::string& = std::string(), bool = false, bool = false) noexcept {}
+inline void diag_begin(uint64_t, DiagnosticStage, const std::string& = std::string()) noexcept {}
+inline void diag_end(uint64_t, DiagnosticStage, const std::string& = std::string(), bool = false, bool = false) noexcept {}
+inline void set_correction_applied(uint64_t, bool) noexcept {}
+inline void set_segmentation(uint64_t, bool, int) noexcept {}
+inline void set_paste_outcome(uint64_t, PasteOutcome) noexcept {}
+inline void set_recording_stop_time(uint64_t) noexcept {}
+inline DiagnosticsSnapshot get_snapshot(std::size_t = 300) noexcept { return DiagnosticsSnapshot{}; }
+inline void register_dashboard_window(HWND) noexcept {}
+inline void unregister_dashboard_window(HWND) noexcept {}
+inline const char* stage_name(DiagnosticStage) noexcept { return "disabled"; }
+inline const char* event_kind_name(DiagnosticEventKind) noexcept { return "disabled"; }
+inline const char* live_state_name(LiveState) noexcept { return "disabled"; }
+inline const char* paste_outcome_name(PasteOutcome) noexcept { return "disabled"; }
+
+#endif
 
 }  // namespace diagnostics

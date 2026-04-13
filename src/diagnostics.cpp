@@ -187,7 +187,7 @@ public:
             std::lock_guard<std::mutex> lock(mu_);
             out.state = state_;
             out.latest_session = latest_session_;
-            const std::size_t take = std::min(max_events, events_.size());
+            const std::size_t take = (std::min)(max_events, events_.size());
             out.recent_events.reserve(take);
             auto start = events_.end() - static_cast<std::ptrdiff_t>(take);
             out.recent_events.insert(out.recent_events.end(), start, events_.end());
