@@ -173,6 +173,11 @@ std::wstring utf8_to_wide(const std::string& text) {
     return out;
 }
 
+template <typename T>
+std::wstring number_to_wide(T value) {
+    return utf8_to_wide(std::to_string(value));
+}
+
 std::wstring quote_windows_arg(const std::wstring& arg) {
     std::wstring out;
     out.push_back(L'"');
@@ -272,13 +277,13 @@ bool run_llama_cli(const std::filesystem::path& exe,
                                       L"-m",
                                       model.wstring(),
                                       L"--temp",
-                                      utf8_to_wide(get_correction_temperature()),
+                                      number_to_wide(get_correction_temperature()),
                                       L"--top-k",
-                                      utf8_to_wide(get_correction_top_k()),
+                                      number_to_wide(get_correction_top_k()),
                                       L"--top-p",
-                                      utf8_to_wide(get_correction_top_p()),
+                                      number_to_wide(get_correction_top_p()),
                                       L"--min-p",
-                                      utf8_to_wide(get_correction_min_p()),
+                                      number_to_wide(get_correction_min_p()),
                                       L"-n",
                                       L"128",
                                       L"-p",
