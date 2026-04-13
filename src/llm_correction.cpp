@@ -3,7 +3,9 @@
 #include "paths.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -13,6 +15,8 @@
 #endif
 
 namespace {
+
+constexpr const char* kPromptMode = "speech_correction_v2";
 
 std::string trim_copy(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
@@ -24,15 +28,16 @@ std::string trim_copy(const std::string& s) {
 }
 
 std::size_t non_space_count(const std::string& s) {
-    return static_cast<std::size_t>(std::count_if(s.begin(), s.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+    return static_cast<std::size_t>(
+        std::count_if(s.begin(), s.end(), [](unsigned char ch) { return !std::isspace(ch); }));
 }
 
 bool is_trivial_cleanup(const std::string& raw, const std::string& corrected) {
     if (raw.empty() || corrected.empty()) {
         return false;
     }
-    std::string a = trim_copy(raw);
-    std::string b = trim_copy(corrected);
+    const std::string a = trim_copy(raw);
+    const std::string b = trim_copy(corrected);
     if (a == b) {
         return true;
     }
@@ -50,14 +55,12 @@ bool looks_like_meta_output(const std::string& text) {
     if (t.empty()) {
         return true;
     }
-    const std::string lower = [&]() {
-        std::string out;
-        out.reserve(t.size());
-        for (unsigned char ch : t) {
-            out.push_back(static_cast<char>(std::tolower(ch)));
-        }
-        return out;
-    }();
+
+    std::string lower;
+    lower.reserve(t.size());
+    for (unsigned char ch : t) {
+        lower.push_back(static_cast<char>(std::tolower(ch)));
+    }
 
     return lower.rfind("here", 0) == 0 || lower.rfind("corrected", 0) == 0 || lower.rfind("output:", 0) == 0 ||
            lower.rfind("the corrected", 0) == 0;
@@ -83,6 +86,26 @@ std::filesystem::path find_llama_cli_path(const std::filesystem::path& llama_roo
     return {};
 }
 
+bool resolve_llama_inputs(std::filesystem::path& llama_exe, std::filesystem::path& llama_model, std::string& error_out) {
+    llama_exe.clear();
+    llama_model.clear();
+    error_out.clear();
+
+    const auto llama_cpp_root = get_llama_cpp_root();
+    llama_model = get_llama_model_path();
+    llama_exe = find_llama_cli_path(llama_cpp_root);
+
+    if (llama_exe.empty()) {
+        error_out = "llama executable not found under: " + llama_cpp_root.string();
+        return false;
+    }
+    if (!std::filesystem::exists(llama_model)) {
+        error_out = "llama model not found: " + llama_model.string();
+        return false;
+    }
+    return true;
+}
+
 std::string build_prompt(const std::string& raw_text) {
     std::ostringstream prompt;
     prompt << "You are an AI assistant correcting speech-to-text transcription output.\n\n"
@@ -93,13 +116,15 @@ std::string build_prompt(const std::string& raw_text) {
            << "- Preserve the intended meaning.\n"
            << "- Do not add new content.\n"
            << "- Do not explain anything.\n"
-           << "- Output only the corrected text.\n"
-           << "- Add a space at the end of the transcript.\n\n"
+           << "- Output only the corrected text.\n\n"
            << "Correction-speech rule:\n"
            << "If the speaker corrects themselves, keep only the final intended correction.\n"
            << "Example:\n"
            << "Input: \"lets meet at 3PM, oh i mean, 4PM\"\n"
            << "Output: \"Let's meet at 4 PM.\"\n\n"
+           << "Ambiguity rule:\n"
+           << "If the text is ambiguous, fragmented, or multiple interpretations are plausible, preserve the original "
+              "wording as much as possible rather than inventing a new meaning.\n\n"
            << "Transcript:\n"
            << raw_text;
     return prompt.str();
@@ -172,17 +197,16 @@ bool run_llama_cli(const std::filesystem::path& exe,
     std::vector<wchar_t> cmdline(cmd_string.begin(), cmd_string.end());
     cmdline.push_back(L'\0');
 
-    const BOOL launched = CreateProcessW(
-        nullptr,
-        cmdline.data(),
-        nullptr,
-        nullptr,
-        TRUE,
-        CREATE_NO_WINDOW,
-        nullptr,
-        nullptr,
-        &si,
-        &pi);
+    const BOOL launched = CreateProcessW(nullptr,
+                                         cmdline.data(),
+                                         nullptr,
+                                         nullptr,
+                                         TRUE,
+                                         CREATE_NO_WINDOW,
+                                         nullptr,
+                                         nullptr,
+                                         &si,
+                                         &pi);
 
     CloseHandle(stdout_write);
     CloseHandle(stderr_write);
@@ -220,9 +244,16 @@ bool run_llama_cli(const std::filesystem::path& exe,
 
 }  // namespace
 
-bool correct_transcript_text(const std::string& raw_text, std::string& corrected_text, std::string& error_out) {
+bool correct_transcript_text_with_info(const std::string& raw_text,
+                                       std::string& corrected_text,
+                                       std::string& error_out,
+                                       CorrectionRunInfo* info_out) {
     corrected_text.clear();
     error_out.clear();
+    if (info_out) {
+        *info_out = {};
+        info_out->prompt_mode = kPromptMode;
+    }
 
     const std::string raw_trimmed = trim_copy(raw_text);
     if (raw_trimmed.empty()) {
@@ -231,23 +262,19 @@ bool correct_transcript_text(const std::string& raw_text, std::string& corrected
     }
 
 #ifdef _WIN32
-    const auto llama_cpp_root = get_llama_cpp_root();
-    const auto llama_model_path = get_llama_model_path();
-    const auto llama_exe = find_llama_cli_path(llama_cpp_root);
-
-    if (llama_exe.empty()) {
-        error_out = "llama executable not found under: " + llama_cpp_root.string();
+    std::filesystem::path llama_exe;
+    std::filesystem::path llama_model;
+    if (!resolve_llama_inputs(llama_exe, llama_model, error_out)) {
         return false;
     }
-
-    if (!std::filesystem::exists(llama_model_path)) {
-        error_out = "llama model not found: " + llama_model_path.string();
-        return false;
+    if (info_out) {
+        info_out->llama_exe = llama_exe;
+        info_out->llama_model = llama_model;
     }
 
     std::string stdout_text;
     std::string stderr_text;
-    if (!run_llama_cli(llama_exe, llama_model_path, build_prompt(raw_trimmed), stdout_text, stderr_text, error_out)) {
+    if (!run_llama_cli(llama_exe, llama_model, build_prompt(raw_trimmed), stdout_text, stderr_text, error_out)) {
         return false;
     }
 
@@ -268,4 +295,29 @@ bool correct_transcript_text(const std::string& raw_text, std::string& corrected
     error_out = "LLM correction is only supported on Windows.";
     return false;
 #endif
+}
+
+bool correct_transcript_text(const std::string& raw_text, std::string& corrected_text, std::string& error_out) {
+    return correct_transcript_text_with_info(raw_text, corrected_text, error_out, nullptr);
+}
+
+int run_llm_test_command(const std::string& input_text) {
+    std::cout << "[LLM_TEST_INPUT] " << input_text << "\n";
+
+    CorrectionRunInfo info;
+    std::string corrected;
+    std::string error;
+    const bool ok = correct_transcript_text_with_info(input_text, corrected, error, &info);
+
+    std::cout << "[LLM_TEST_MODEL] " << info.llama_model.string() << "\n";
+    std::cout << "[LLM_TEST_EXE] " << info.llama_exe.string() << "\n";
+    std::cout << "[LLM_TEST_PROMPT_MODE] " << info.prompt_mode << "\n";
+
+    if (!ok) {
+        std::cout << "[LLM_TEST_ERROR] " << error << "\n";
+        return 1;
+    }
+
+    std::cout << "[LLM_TEST_OUTPUT] " << corrected << "\n";
+    return 0;
 }
