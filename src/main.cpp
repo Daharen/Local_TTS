@@ -8,6 +8,17 @@
 
 namespace {
 
+std::string join_args(int argc, char** argv, int start_index) {
+    std::string out;
+    for (int i = start_index; i < argc; ++i) {
+        if (!out.empty()) {
+            out.push_back(' ');
+        }
+        out += argv[i];
+    }
+    return out;
+}
+
 void print_usage() {
     std::cerr << "Usage:\n"
               << "  local_tts\n"
@@ -37,8 +48,8 @@ int main(int argc, char** argv) {
         return run_live_mode(true);
     }
 
-    if (argc == 3 && std::string(argv[1]) == "llm-test") {
-        return run_llm_test_command(argv[2]);
+    if (argc >= 3 && std::string(argv[1]) == "llm-test") {
+        return run_llm_test_command(join_args(argc, argv, 2));
     }
 
     print_usage();

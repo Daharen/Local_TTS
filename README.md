@@ -9,15 +9,12 @@ Local-first C++ transcription for Windows using external `whisper.cpp` and optio
 - `./run.ps1 live-debug`
 - `./run.ps1 llm-test "<text>"`
 
-## LLM formatting layer (enabled by default)
-- Finalized Whisper text now goes through a default-on formatting layer (`correction_enabled: true`).
-- The layer does conservative grammar/punctuation cleanup plus readability formatting.
-- It may add line breaks, paragraph breaks, indentation, and light structure when warranted.
-- `correction_mode: "formatted"` (default) keeps structure minimal and readability-focused.
-- `correction_mode: "notes"` is more willing to emit bullet/list structure when content supports it.
-- Switch modes in `runtime.local.json` (or `LOCAL_TTS_CORRECTION_MODE`).
+## LLM formatting/correction (enabled by default)
+- Live mode runs **Whisper first**, then applies optional local llama.cpp formatting/correction.
+- Defaults remain deterministic and enabled (`correction_enabled: true`, `correction_mode: "formatted"`).
+- Default GGUF model path is:
+  `F:\Qwen3.5-27B\small-model-3b\Qwen2.5-3B-Instruct-IQ4_XS.gguf`
 
-## Diagnostics
-- Direct formatting test: `./run.ps1 llm-test "<text>"`
-- Live debug mode: `./run.ps1 live-debug`
-- Live mode remains non-disruptive to target windows (no restore/resize/move behavior).
+## llm-test
+- `./run.ps1 llm-test "<text>"` runs only the local LLM correction layer (no microphone/Whisper needed).
+- Useful for validating prompt/model/invocation behavior directly during setup or debugging.

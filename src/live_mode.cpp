@@ -236,13 +236,13 @@ private:
                 if (!log.transcribe_error.empty()) {
                     debug_line("[WHISPER_ERROR] " + log.transcribe_error, true);
                 } else {
-                    debug_line("[WHISPER_RAW] " + log.raw_transcript);
+                    debug_line("[RAW_WHISPER] " + log.raw_transcript);
                 }
             }
 
             std::string output_text = log.raw_transcript;
-            debug_line(std::string("[LLM_ENABLED] ") + (log.correction_enabled ? "true" : "false"));
-            debug_line("[LLM_MODE] " + log.correction_mode);
+            debug_line(std::string("[CORRECTION_ENABLED] ") + (log.correction_enabled ? "true" : "false"));
+            debug_line("[CORRECTION_MODE] " + log.correction_mode);
 
             if (log.correction_enabled && !log.raw_transcript.empty()) {
                 CorrectionRunInfo info;
@@ -252,22 +252,17 @@ private:
                     log.correction_mode = info.correction_mode;
                     output_text = log.formatted_text;
                     log.correction_applied = true;
-                    debug_line("[LLM_INPUT] " + log.raw_transcript);
-                    debug_line("[LLM_OUTPUT] " + log.formatted_text);
-                    debug_line("[LLM_APPLIED] true");
+                    debug_line("[FORMATTED_TEXT] " + log.formatted_text);
+                    debug_line("[CORRECTION_APPLIED] true");
                 } else {
                     if (!info.correction_mode.empty()) {
                         log.correction_mode = info.correction_mode;
                     }
-                    debug_line("[LLM_INPUT] " + log.raw_transcript);
-                    if (!log.formatted_text.empty()) {
-                        debug_line("[LLM_OUTPUT] " + log.formatted_text);
-                    }
-                    debug_line("[LLM_FAILED] " + log.correction_error, true);
-                    debug_line("[LLM_APPLIED] false");
+                    debug_line("[CORRECTION_FAILED] " + log.correction_error, true);
+                    debug_line("[CORRECTION_APPLIED] false");
                 }
             } else if (!log.raw_transcript.empty()) {
-                debug_line("[LLM_APPLIED] false");
+                debug_line("[CORRECTION_APPLIED] false");
             }
 
             if (!output_text.empty()) {
