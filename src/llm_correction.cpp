@@ -16,8 +16,6 @@
 
 namespace {
 
-constexpr const char* kPromptMode = "speech_correction_v2";
-
 std::string trim_copy(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
@@ -25,6 +23,15 @@ std::string trim_copy(const std::string& s) {
     }
     const auto last = s.find_last_not_of(" \t\r\n");
     return s.substr(first, last - first + 1);
+}
+
+std::string normalized_correction_mode() {
+    std::string mode = trim_copy(get_correction_mode());
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (mode == "notes") {
+        return "notes";
+    }
+    return "formatted";
 }
 
 std::size_t non_space_count(const std::string& s) {
@@ -107,16 +114,38 @@ bool resolve_llama_inputs(std::filesystem::path& llama_exe, std::filesystem::pat
 }
 
 std::string build_prompt(const std::string& raw_text) {
+    const std::string mode = normalized_correction_mode();
+    if (mode == "notes") {
+        std::ostringstream prompt;
+        prompt << "You are an AI assistant turning speech-to-text transcription into clean readable notes.\n\n"
+               << "Task:\n"
+               << "- Fix grammar, punctuation, capitalization, and spacing.\n"
+               << "- Remove filler words, filled pauses, and hesitation artifacts.\n"
+               << "- Preserve meaning.\n"
+               << "- Improve readability with paragraph breaks and line breaks.\n"
+               << "- Use bullets, indentation, or list structure when the spoken content clearly supports it.\n"
+               << "- Avoid giant monotonous blocks of text.\n"
+               << "- Do not invent content.\n"
+               << "- Do not explain anything.\n"
+               << "- Output only the final formatted notes.\n\n"
+               << "Transcript:\n"
+               << raw_text;
+        return prompt.str();
+    }
+
     std::ostringstream prompt;
-    prompt << "You are an AI assistant correcting speech-to-text transcription output.\n\n"
+    prompt << "You are an AI assistant cleaning and formatting speech-to-text transcription output.\n\n"
            << "Task:\n"
            << "- Fix grammar, punctuation, capitalization, and spacing errors.\n"
            << "- Remove filler words, filled pauses, and hesitation artifacts.\n"
            << "- Correct obvious transcription mistakes conservatively.\n"
            << "- Preserve the intended meaning.\n"
+           << "- Improve readability with paragraph breaks and line breaks.\n"
+           << "- Use indentation or light structure only when clearly warranted by the content.\n"
+           << "- Avoid giant monotonous blocks of text.\n"
            << "- Do not add new content.\n"
            << "- Do not explain anything.\n"
-           << "- Output only the corrected text.\n\n"
+           << "- Output only the final formatted text.\n\n"
            << "Correction-speech rule:\n"
            << "If the speaker corrects themselves, keep only the final intended correction.\n"
            << "Example:\n"
@@ -252,7 +281,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     error_out.clear();
     if (info_out) {
         *info_out = {};
-        info_out->prompt_mode = kPromptMode;
+        info_out->correction_mode = normalized_correction_mode();
     }
 
     const std::string raw_trimmed = trim_copy(raw_text);
@@ -311,7 +340,7 @@ int run_llm_test_command(const std::string& input_text) {
 
     std::cout << "[LLM_TEST_MODEL] " << info.llama_model.string() << "\n";
     std::cout << "[LLM_TEST_EXE] " << info.llama_exe.string() << "\n";
-    std::cout << "[LLM_TEST_PROMPT_MODE] " << info.prompt_mode << "\n";
+    std::cout << "[LLM_TEST_MODE] " << normalized_correction_mode() << "\n";
 
     if (!ok) {
         std::cout << "[LLM_TEST_ERROR] " << error << "\n";
