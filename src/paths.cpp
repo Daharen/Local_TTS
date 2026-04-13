@@ -303,6 +303,59 @@ double get_correction_min_p() {
     return 0.0;
 }
 
+
+int get_correction_max_output_tokens() {
+    const auto runtime_value = read_runtime_value("correction_max_output_tokens");
+    if (!runtime_value.empty()) {
+        return parse_int_value(runtime_value, 512);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_MAX_OUTPUT_TOKENS")) {
+        return parse_int_value(trim_copy(env), 512);
+    }
+
+    return 512;
+}
+
+int get_correction_segment_max_chars() {
+    const auto runtime_value = read_runtime_value("correction_segment_max_chars");
+    if (!runtime_value.empty()) {
+        return parse_int_value(runtime_value, 1600);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_SEGMENT_MAX_CHARS")) {
+        return parse_int_value(trim_copy(env), 1600);
+    }
+
+    return 1600;
+}
+
+int get_correction_segment_overlap_chars() {
+    const auto runtime_value = read_runtime_value("correction_segment_overlap_chars");
+    if (!runtime_value.empty()) {
+        return parse_int_value(runtime_value, 200);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_SEGMENT_OVERLAP_CHARS")) {
+        return parse_int_value(trim_copy(env), 200);
+    }
+
+    return 200;
+}
+
+int get_correction_force_segmentation_threshold_chars() {
+    const auto runtime_value = read_runtime_value("correction_force_segmentation_threshold_chars");
+    if (!runtime_value.empty()) {
+        return parse_int_value(runtime_value, 1800);
+    }
+
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_FORCE_SEGMENTATION_THRESHOLD_CHARS")) {
+        return parse_int_value(trim_copy(env), 1800);
+    }
+
+    return 1800;
+}
+
 std::string get_correction_mode() {
     const auto runtime_value = trim_copy(read_runtime_value("correction_mode"));
     if (!runtime_value.empty()) {
@@ -340,6 +393,10 @@ std::string describe_paths_json() {
         << "  \"correction_top_k\": " << get_correction_top_k() << ",\n"
         << "  \"correction_top_p\": " << get_correction_top_p() << ",\n"
         << "  \"correction_min_p\": " << get_correction_min_p() << ",\n"
+        << "  \"correction_max_output_tokens\": " << get_correction_max_output_tokens() << ",\n"
+        << "  \"correction_segment_max_chars\": " << get_correction_segment_max_chars() << ",\n"
+        << "  \"correction_segment_overlap_chars\": " << get_correction_segment_overlap_chars() << ",\n"
+        << "  \"correction_force_segmentation_threshold_chars\": " << get_correction_force_segmentation_threshold_chars() << ",\n"
         << "  \"correction_mode\": \"" << escape_json(get_correction_mode()) << "\"\n"
         << "}";
     return out.str();

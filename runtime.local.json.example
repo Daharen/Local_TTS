@@ -9,5 +9,9 @@
   "correction_top_k": 1,
   "correction_top_p": 0.0,
   "correction_min_p": 0.0,
-  "correction_mode": "formatted"
+  "correction_mode": "formatted",
+  "correction_max_output_tokens": 512,
+  "correction_segment_max_chars": 1600,
+  "correction_segment_overlap_chars": 200,
+  "correction_force_segmentation_threshold_chars": 1800
 }

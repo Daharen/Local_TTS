@@ -92,6 +92,10 @@ private:
         std::string formatted_text;
         std::string transcribe_error;
         std::string correction_error;
+        bool correction_segmented = false;
+        int correction_segment_count = 0;
+        int correction_max_output_tokens = 0;
+        std::string correction_failed_segments;
         std::string paste_error;
     };
 
@@ -225,6 +229,7 @@ private:
             LogPayload log;
             log.correction_enabled = is_correction_enabled();
             log.correction_mode = normalize_mode_label(get_correction_mode());
+            log.correction_max_output_tokens = get_correction_max_output_tokens();
             log.wav_path = wav_path.string();
             debug_line("[WAV_PATH] " + log.wav_path);
 
@@ -252,11 +257,41 @@ private:
                     log.correction_mode = info.correction_mode;
                     output_text = log.formatted_text;
                     log.correction_applied = true;
+                    log.correction_segmented = info.segmented;
+                    log.correction_segment_count = info.segment_count;
+                    if (!info.failed_segment_indices.empty()) {
+                        std::ostringstream failed;
+                        for (std::size_t i = 0; i < info.failed_segment_indices.size(); ++i) {
+                            if (i > 0) {
+                                failed << ",";
+                            }
+                            failed << info.failed_segment_indices[i];
+                        }
+                        log.correction_failed_segments = failed.str();
+                    }
+                    debug_line(std::string("[CORRECTION_SEGMENTED] ") + (log.correction_segmented ? "true" : "false"));
+                    debug_line("[CORRECTION_SEGMENT_COUNT] " + std::to_string(log.correction_segment_count));
+                    debug_line("[CORRECTION_MAX_OUTPUT_TOKENS] " + std::to_string(log.correction_max_output_tokens));
+                    if (!log.correction_failed_segments.empty()) {
+                        debug_line("[CORRECTION_FAILED_SEGMENTS] " + log.correction_failed_segments);
+                    }
                     debug_line("[FORMATTED_TEXT] " + log.formatted_text);
                     debug_line("[CORRECTION_APPLIED] true");
                 } else {
                     if (!info.correction_mode.empty()) {
                         log.correction_mode = info.correction_mode;
+                    }
+                    log.correction_segmented = info.segmented;
+                    log.correction_segment_count = info.segment_count;
+                    if (!info.failed_segment_indices.empty()) {
+                        std::ostringstream failed;
+                        for (std::size_t i = 0; i < info.failed_segment_indices.size(); ++i) {
+                            if (i > 0) {
+                                failed << ",";
+                            }
+                            failed << info.failed_segment_indices[i];
+                        }
+                        log.correction_failed_segments = failed.str();
                     }
                     debug_line("[CORRECTION_FAILED] " + log.correction_error, true);
                     debug_line("[CORRECTION_APPLIED] false");
@@ -310,6 +345,9 @@ private:
         out << "[WAV_PATH] " << log.wav_path << "\n";
         out << "[CORRECTION_ENABLED] " << (log.correction_enabled ? "true" : "false") << "\n";
         out << "[CORRECTION_MODE] " << log.correction_mode << "\n";
+        out << "[CORRECTION_SEGMENTED] " << (log.correction_segmented ? "true" : "false") << "\n";
+        out << "[CORRECTION_SEGMENT_COUNT] " << log.correction_segment_count << "\n";
+        out << "[CORRECTION_MAX_OUTPUT_TOKENS] " << log.correction_max_output_tokens << "\n";
 
         if (!log.raw_transcript.empty()) {
             out << "[RAW_WHISPER] " << log.raw_transcript << "\n";
@@ -319,6 +357,9 @@ private:
         }
         out << "[CORRECTION_APPLIED] " << (log.correction_applied ? "true" : "false") << "\n";
 
+        if (!log.correction_failed_segments.empty()) {
+            out << "[CORRECTION_FAILED_SEGMENTS] " << log.correction_failed_segments << "\n";
+        }
         if (!log.correction_error.empty()) {
             out << "[CORRECTION_FAILED] " << log.correction_error << "\n";
         }
