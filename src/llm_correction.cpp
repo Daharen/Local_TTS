@@ -11,6 +11,9 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -410,7 +413,7 @@ std::string compact_debug_excerpt(const std::string& text, std::size_t limit = 3
 }
 
 int pick_split_pos(const std::string& text, int start, int max_chars) {
-    const int end = std::min(static_cast<int>(text.size()), start + max_chars);
+    const int end = (std::min)(static_cast<int>(text.size()), start + max_chars);
     if (end <= start) {
         return start;
     }
@@ -448,8 +451,8 @@ std::vector<std::string> build_segments(const std::string& raw, int max_chars, i
         return segments;
     }
 
-    const int safe_max = std::max(200, max_chars);
-    const int safe_overlap = std::max(0, std::min(overlap_chars, safe_max / 3));
+    const int safe_max = (std::max)(200, max_chars);
+    const int safe_overlap = (std::max)(0, (std::min)(overlap_chars, safe_max / 3));
 
     int start = 0;
     while (start < static_cast<int>(raw.size())) {
@@ -461,19 +464,19 @@ std::vector<std::string> build_segments(const std::string& raw, int max_chars, i
         }
 
         const int split = pick_split_pos(raw, start, safe_max);
-        int end = std::max(split, start + 1);
+        int end = (std::max)(split, start + 1);
         while (end > start && std::isspace(static_cast<unsigned char>(raw[static_cast<std::size_t>(end - 1)]))) {
             --end;
         }
         if (end <= start) {
-            end = std::min(start + safe_max, static_cast<int>(raw.size()));
+            end = (std::min)(start + safe_max, static_cast<int>(raw.size()));
         }
 
         segments.push_back(trim_copy(raw.substr(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start))));
         if (end >= static_cast<int>(raw.size())) {
             break;
         }
-        start = std::max(0, end - safe_overlap);
+        start = (std::max)(0, end - safe_overlap);
     }
 
     return segments;
@@ -490,8 +493,8 @@ std::size_t find_overlap_cut(const std::string& merged, const std::string& next,
         return 0;
     }
 
-    const std::size_t max_scan = static_cast<std::size_t>(std::max(64, overlap_chars * 2));
-    const std::size_t max_len = std::min({a.size(), b.size(), max_scan});
+    const std::size_t max_scan = static_cast<std::size_t>((std::max)(64, overlap_chars * 2));
+    const std::size_t max_len = (std::min)((std::min)(a.size(), b.size()), max_scan);
     std::size_t best = 0;
     for (std::size_t len = max_len; len >= 12; --len) {
         if (a.compare(a.size() - len, len, b, 0, len) == 0) {
@@ -853,7 +856,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     const int seg_threshold = get_correction_force_segmentation_threshold_chars();
     const int seg_max = get_correction_segment_max_chars();
     const int seg_overlap = get_correction_segment_overlap_chars();
-    const bool segmented = static_cast<int>(raw_trimmed.size()) >= std::max(1, seg_threshold);
+    const bool segmented = static_cast<int>(raw_trimmed.size()) >= (std::max)(1, seg_threshold);
 
     if (info_out) {
         info_out->segmented = segmented;
