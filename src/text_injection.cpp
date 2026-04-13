@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include <chrono>
+#include <array>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -42,6 +43,24 @@ void send_ctrl_v() {
     SendInput(4, inputs, sizeof(INPUT));
 }
 
+void release_modifiers() {
+    constexpr std::array<WORD, 11> kModifierKeys = {
+        VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU,  VK_LMENU, VK_RMENU,
+        VK_SHIFT,   VK_LSHIFT,   VK_RSHIFT,   VK_LWIN,  VK_RWIN,
+    };
+
+    std::vector<INPUT> inputs;
+    inputs.reserve(kModifierKeys.size());
+    for (WORD key : kModifierKeys) {
+        INPUT input{};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = key;
+        input.ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs.push_back(input);
+    }
+    SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+}
+
 }  // namespace
 
 bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8_text, std::string& error_out) {
@@ -52,11 +71,7 @@ bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8
         return false;
     }
 
-    if (target_window && IsWindow(target_window)) {
-        ShowWindow(target_window, SW_RESTORE);
-        SetForegroundWindow(target_window);
-        std::this_thread::sleep_for(std::chrono::milliseconds(60));
-    }
+    (void)target_window;
 
     if (!OpenClipboard(nullptr)) {
         error_out = "Failed to open clipboard.";
@@ -89,6 +104,8 @@ bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8
     }
 
     CloseClipboard();
+    release_modifiers();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
     send_ctrl_v();
     return true;
 }

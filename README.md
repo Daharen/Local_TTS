@@ -17,5 +17,6 @@ Large assets stay outside git at `F:\Local_TTS_Large_Data` (or your configured l
 - Hold `Ctrl+Alt` to record microphone audio.
 - Release either key to stop recording and transcribe locally.
 - Transcript is inserted into the target app using clipboard + `Ctrl+V`.
+- Paste avoids restore/resize/move window behavior; if focus cannot be safely returned, paste is skipped and logged.
 - Transcript is appended to:
   - `<large_data_root>/output/live_transcripts/session.txt`
