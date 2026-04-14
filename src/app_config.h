@@ -26,6 +26,8 @@ struct AppConfig {
     int correction_resident_threads;
     int correction_resident_startup_timeout_ms;
     int correction_resident_request_timeout_ms;
+    int correction_resident_total_budget_ms;
+    int correction_resident_per_attempt_timeout_ms;
     int correction_max_output_tokens;
     int correction_segment_max_chars;
     int correction_segment_overlap_chars;

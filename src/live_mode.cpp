@@ -123,6 +123,15 @@ private:
         int resident_http_status = 0;
         std::string resident_error;
         std::string resident_server_exe;
+        std::string resident_phase;
+        int resident_total_budget_ms = 0;
+        int resident_remaining_budget_ms = 0;
+        int resident_attempt_timeout_ms = 0;
+        int resident_request_count = 0;
+        std::string resident_last_endpoint;
+        int resident_last_status = 0;
+        std::string resident_last_error;
+        std::string resident_reset_reason;
         int resident_gpu_layers = 0;
         int resident_ctx_size = 0;
         int resident_threads = 0;
@@ -336,6 +345,15 @@ private:
                     log.resident_http_status = info.resident_http_status;
                     log.resident_error = info.resident_error;
                     log.resident_server_exe = info.resident_server_exe;
+                    log.resident_phase = info.resident_phase;
+                    log.resident_total_budget_ms = info.resident_total_budget_ms;
+                    log.resident_remaining_budget_ms = info.resident_remaining_budget_ms;
+                    log.resident_attempt_timeout_ms = info.resident_attempt_timeout_ms;
+                    log.resident_request_count = info.resident_request_count;
+                    log.resident_last_endpoint = info.resident_last_endpoint;
+                    log.resident_last_status = info.resident_last_status;
+                    log.resident_last_error = info.resident_last_error;
+                    log.resident_reset_reason = info.resident_reset_reason;
                     log.resident_gpu_layers = info.resident_gpu_layers;
                     log.resident_ctx_size = info.resident_ctx_size;
                     log.resident_threads = info.resident_threads;
@@ -369,6 +387,25 @@ private:
                     if (!log.resident_error.empty()) {
                         debug_line("[LLM_RESIDENT_ERROR] " + log.resident_error);
                     }
+                    if (!log.resident_phase.empty()) {
+                        debug_line("[LLM_RESIDENT_PHASE] " + log.resident_phase);
+                    }
+                    debug_line("[LLM_RESIDENT_BUDGET] total_ms=" + std::to_string(log.resident_total_budget_ms) +
+                               " remaining_ms=" + std::to_string(log.resident_remaining_budget_ms) +
+                               " attempt_timeout_ms=" + std::to_string(log.resident_attempt_timeout_ms) +
+                               " request_count=" + std::to_string(log.resident_request_count));
+                    if (!log.resident_last_endpoint.empty()) {
+                        debug_line("[LLM_RESIDENT_LAST_ENDPOINT] " + log.resident_last_endpoint);
+                    }
+                    if (log.resident_last_status > 0) {
+                        debug_line("[LLM_RESIDENT_LAST_STATUS] " + std::to_string(log.resident_last_status));
+                    }
+                    if (!log.resident_last_error.empty()) {
+                        debug_line("[LLM_RESIDENT_LAST_ERROR] " + log.resident_last_error);
+                    }
+                    if (!log.resident_reset_reason.empty()) {
+                        debug_line("[LLM_RESIDENT_RESET_REASON] " + log.resident_reset_reason);
+                    }
                     debug_line("[LLM_RESIDENT_CONFIG] gpu_layers=" + std::to_string(log.resident_gpu_layers) +
                                " ctx=" + std::to_string(log.resident_ctx_size) +
                                " threads=" + std::to_string(log.resident_threads));
@@ -400,7 +437,11 @@ private:
                                                       log.resident_started,
                                                       log.resident_startup_error,
                                                       log.resident_endpoint_used,
-                                                      log.resident_http_status);
+                                                      log.resident_http_status,
+                                                      log.resident_phase,
+                                                      log.resident_remaining_budget_ms,
+                                                      log.resident_request_count,
+                                                      log.resident_last_error);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -422,6 +463,15 @@ private:
                     log.resident_http_status = info.resident_http_status;
                     log.resident_error = info.resident_error.empty() ? info.resident_startup_error : info.resident_error;
                     log.resident_server_exe = info.resident_server_exe;
+                    log.resident_phase = info.resident_phase;
+                    log.resident_total_budget_ms = info.resident_total_budget_ms;
+                    log.resident_remaining_budget_ms = info.resident_remaining_budget_ms;
+                    log.resident_attempt_timeout_ms = info.resident_attempt_timeout_ms;
+                    log.resident_request_count = info.resident_request_count;
+                    log.resident_last_endpoint = info.resident_last_endpoint;
+                    log.resident_last_status = info.resident_last_status;
+                    log.resident_last_error = info.resident_last_error;
+                    log.resident_reset_reason = info.resident_reset_reason;
                     log.resident_gpu_layers = info.resident_gpu_layers;
                     log.resident_ctx_size = info.resident_ctx_size;
                     log.resident_threads = info.resident_threads;
@@ -449,6 +499,25 @@ private:
                     }
                     if (!log.resident_error.empty()) {
                         debug_line("[LLM_RESIDENT_ERROR] " + log.resident_error);
+                    }
+                    if (!log.resident_phase.empty()) {
+                        debug_line("[LLM_RESIDENT_PHASE] " + log.resident_phase);
+                    }
+                    debug_line("[LLM_RESIDENT_BUDGET] total_ms=" + std::to_string(log.resident_total_budget_ms) +
+                               " remaining_ms=" + std::to_string(log.resident_remaining_budget_ms) +
+                               " attempt_timeout_ms=" + std::to_string(log.resident_attempt_timeout_ms) +
+                               " request_count=" + std::to_string(log.resident_request_count));
+                    if (!log.resident_last_endpoint.empty()) {
+                        debug_line("[LLM_RESIDENT_LAST_ENDPOINT] " + log.resident_last_endpoint);
+                    }
+                    if (log.resident_last_status > 0) {
+                        debug_line("[LLM_RESIDENT_LAST_STATUS] " + std::to_string(log.resident_last_status));
+                    }
+                    if (!log.resident_last_error.empty()) {
+                        debug_line("[LLM_RESIDENT_LAST_ERROR] " + log.resident_last_error);
+                    }
+                    if (!log.resident_reset_reason.empty()) {
+                        debug_line("[LLM_RESIDENT_RESET_REASON] " + log.resident_reset_reason);
                     }
                     debug_line("[LLM_RESIDENT_CONFIG] gpu_layers=" + std::to_string(log.resident_gpu_layers) +
                                " ctx=" + std::to_string(log.resident_ctx_size) +
@@ -479,7 +548,11 @@ private:
                                                       log.resident_started,
                                                       log.resident_startup_error,
                                                       log.resident_endpoint_used,
-                                                      log.resident_http_status);
+                                                      log.resident_http_status,
+                                                      log.resident_phase,
+                                                      log.resident_remaining_budget_ms,
+                                                      log.resident_request_count,
+                                                      log.resident_last_error);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -490,7 +563,7 @@ private:
             } else if (!log.raw_transcript.empty()) {
                 debug_line("[CORRECTION_APPLIED] false");
                 diagnostics::set_correction_applied(session_id_, false);
-                diagnostics::set_correction_debug(session_id_, "none", "", "", "", "", false, false, "", "", 0);
+                diagnostics::set_correction_debug(session_id_, "none", "", "", "", "", false, false, "", "", 0, "", 0, 0, "");
                 diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::Correction, "correction not used");
             }
 
@@ -592,6 +665,25 @@ private:
         }
         if (!log.resident_error.empty()) {
             out << "[LLM_RESIDENT_ERROR] " << log.resident_error << "\n";
+        }
+        if (!log.resident_phase.empty()) {
+            out << "[LLM_RESIDENT_PHASE] " << log.resident_phase << "\n";
+        }
+        out << "[LLM_RESIDENT_BUDGET] total_ms=" << log.resident_total_budget_ms
+            << " remaining_ms=" << log.resident_remaining_budget_ms
+            << " attempt_timeout_ms=" << log.resident_attempt_timeout_ms
+            << " request_count=" << log.resident_request_count << "\n";
+        if (!log.resident_last_endpoint.empty()) {
+            out << "[LLM_RESIDENT_LAST_ENDPOINT] " << log.resident_last_endpoint << "\n";
+        }
+        if (log.resident_last_status > 0) {
+            out << "[LLM_RESIDENT_LAST_STATUS] " << log.resident_last_status << "\n";
+        }
+        if (!log.resident_last_error.empty()) {
+            out << "[LLM_RESIDENT_LAST_ERROR] " << log.resident_last_error << "\n";
+        }
+        if (!log.resident_reset_reason.empty()) {
+            out << "[LLM_RESIDENT_RESET_REASON] " << log.resident_reset_reason << "\n";
         }
         out << "[LLM_RESIDENT_CONFIG] gpu_layers=" << log.resident_gpu_layers
             << " ctx=" << log.resident_ctx_size

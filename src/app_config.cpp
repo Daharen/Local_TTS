@@ -232,6 +232,17 @@ void apply_config_json(AppConfig& config, const std::string& json) {
         config.correction_resident_request_timeout_ms =
             parse_int_value(correction_resident_request_timeout_ms, config.correction_resident_request_timeout_ms);
     }
+    const auto correction_resident_total_budget_ms = find_json_value_token(json, "correction_resident_total_budget_ms");
+    if (!correction_resident_total_budget_ms.empty()) {
+        config.correction_resident_total_budget_ms =
+            parse_int_value(correction_resident_total_budget_ms, config.correction_resident_total_budget_ms);
+    }
+    const auto correction_resident_per_attempt_timeout_ms =
+        find_json_value_token(json, "correction_resident_per_attempt_timeout_ms");
+    if (!correction_resident_per_attempt_timeout_ms.empty()) {
+        config.correction_resident_per_attempt_timeout_ms =
+            parse_int_value(correction_resident_per_attempt_timeout_ms, config.correction_resident_per_attempt_timeout_ms);
+    }
 
     const auto correction_max_output_tokens = find_json_value_token(json, "correction_max_output_tokens");
     if (!correction_max_output_tokens.empty()) {
@@ -344,6 +355,13 @@ void apply_environment_overrides(AppConfig& config) {
         config.correction_resident_request_timeout_ms =
             parse_int_value(trim_copy(env), config.correction_resident_request_timeout_ms);
     }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_TOTAL_BUDGET_MS")) {
+        config.correction_resident_total_budget_ms = parse_int_value(trim_copy(env), config.correction_resident_total_budget_ms);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_PER_ATTEMPT_TIMEOUT_MS")) {
+        config.correction_resident_per_attempt_timeout_ms =
+            parse_int_value(trim_copy(env), config.correction_resident_per_attempt_timeout_ms);
+    }
     if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_MAX_OUTPUT_TOKENS")) {
         config.correction_max_output_tokens = parse_int_value(trim_copy(env), config.correction_max_output_tokens);
     }
@@ -375,7 +393,7 @@ AppConfig make_default_config() {
     config.correction_top_p = 0.0;
     config.correction_min_p = 0.0;
     config.correction_mode = "formatted";
-    config.correction_backend_mode = "resident";
+    config.correction_backend_mode = "oneshot";
     config.correction_resident_enabled = true;
     config.correction_resident_host = "127.0.0.1";
     config.correction_resident_port = 18081;
@@ -384,6 +402,8 @@ AppConfig make_default_config() {
     config.correction_resident_threads = 8;
     config.correction_resident_startup_timeout_ms = 8000;
     config.correction_resident_request_timeout_ms = 15000;
+    config.correction_resident_total_budget_ms = 5000;
+    config.correction_resident_per_attempt_timeout_ms = 2500;
     config.correction_max_output_tokens = 512;
     config.correction_segment_max_chars = 1600;
     config.correction_segment_overlap_chars = 200;

@@ -20,9 +20,18 @@ struct CorrectionRunInfo {
     bool resident_request_sent = false;
     int resident_http_status = 0;
     bool fallback_used = false;
+    std::string resident_phase;
+    int resident_total_budget_ms = 0;
+    int resident_remaining_budget_ms = 0;
+    int resident_attempt_timeout_ms = 0;
+    int resident_request_count = 0;
+    int resident_last_status = 0;
     std::string resident_error;
+    std::string resident_last_error;
+    std::string resident_reset_reason;
     std::string resident_startup_error;
     std::string resident_server_exe;
+    std::string resident_last_endpoint;
     std::string resident_endpoint_used;
     std::string resident_probe_used;
     std::string resident_args_excerpt;

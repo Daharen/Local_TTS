@@ -29,4 +29,6 @@ int get_correction_resident_gpu_layers();
 int get_correction_resident_threads();
 int get_correction_resident_startup_timeout_ms();
 int get_correction_resident_request_timeout_ms();
+int get_correction_resident_total_budget_ms();
+int get_correction_resident_per_attempt_timeout_ms();
 std::string describe_paths_json();
