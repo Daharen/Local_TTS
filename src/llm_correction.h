@@ -9,6 +9,14 @@ struct CorrectionRunInfo {
     std::filesystem::path llama_model;
     std::string correction_mode;
     std::string backend_used;
+    std::string raw_stdout_excerpt;
+    std::string raw_stderr_excerpt;
+    std::string raw_error_text;
+    std::string sanitized_output;
+    std::string sanitizer_reason;
+    bool resident_attempted = false;
+    bool resident_started = false;
+    bool fallback_used = false;
     std::string raw_stdout;
     std::string clean_output;
     bool segmented = false;

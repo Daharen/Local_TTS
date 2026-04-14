@@ -111,6 +111,10 @@ private:
         std::string formatted_text;
         std::string transcribe_error;
         std::string correction_error;
+        std::string llm_backend;
+        std::string correction_raw_stdout;
+        std::string correction_raw_stderr;
+        std::string correction_sanitizer_reason;
         bool correction_segmented = false;
         int correction_segment_count = 0;
         int correction_max_output_tokens = 0;
@@ -308,6 +312,10 @@ private:
                         log.raw_transcript, log.formatted_text, log.correction_error, &info) &&
                     !log.formatted_text.empty()) {
                     log.correction_mode = info.correction_mode;
+                    log.llm_backend = info.backend_used;
+                    log.correction_raw_stdout = info.raw_stdout_excerpt;
+                    log.correction_raw_stderr = info.raw_stderr_excerpt;
+                    log.correction_sanitizer_reason = info.sanitizer_reason;
                     output_text = log.formatted_text;
                     log.correction_applied = true;
                     log.correction_segmented = info.segmented;
@@ -325,12 +333,28 @@ private:
                     debug_line(std::string("[CORRECTION_SEGMENTED] ") + (log.correction_segmented ? "true" : "false"));
                     debug_line("[CORRECTION_SEGMENT_COUNT] " + std::to_string(log.correction_segment_count));
                     debug_line("[CORRECTION_MAX_OUTPUT_TOKENS] " + std::to_string(log.correction_max_output_tokens));
+                    debug_line("[LLM_BACKEND] " + (log.llm_backend.empty() ? "none" : log.llm_backend));
+                    if (!log.correction_raw_stdout.empty()) {
+                        debug_line("[CORRECTION_RAW_STDOUT] " + log.correction_raw_stdout);
+                    }
+                    if (!log.correction_raw_stderr.empty()) {
+                        debug_line("[CORRECTION_RAW_STDERR] " + log.correction_raw_stderr);
+                    }
+                    if (!log.correction_sanitizer_reason.empty()) {
+                        debug_line("[CORRECTION_SANITIZER_REASON] " + log.correction_sanitizer_reason);
+                    }
                     if (!log.correction_failed_segments.empty()) {
                         debug_line("[CORRECTION_FAILED_SEGMENTS] " + log.correction_failed_segments);
                     }
                     debug_line("[FORMATTED_TEXT] " + log.formatted_text);
                     debug_line("[CORRECTION_APPLIED] true");
                     diagnostics::set_correction_applied(session_id_, true);
+                    diagnostics::set_correction_debug(session_id_,
+                                                      log.llm_backend,
+                                                      "",
+                                                      log.correction_sanitizer_reason,
+                                                      log.correction_raw_stdout,
+                                                      log.correction_raw_stderr);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -341,6 +365,10 @@ private:
                     if (!info.correction_mode.empty()) {
                         log.correction_mode = info.correction_mode;
                     }
+                    log.llm_backend = info.backend_used;
+                    log.correction_raw_stdout = info.raw_stdout_excerpt;
+                    log.correction_raw_stderr = info.raw_stderr_excerpt;
+                    log.correction_sanitizer_reason = info.sanitizer_reason;
                     log.correction_segmented = info.segmented;
                     log.correction_segment_count = info.segment_count;
                     if (!info.failed_segment_indices.empty()) {
@@ -353,9 +381,26 @@ private:
                         }
                         log.correction_failed_segments = failed.str();
                     }
+                    debug_line("[LLM_BACKEND] " + (log.llm_backend.empty() ? "none" : log.llm_backend));
+                    if (!log.correction_raw_stdout.empty()) {
+                        debug_line("[CORRECTION_RAW_STDOUT] " + log.correction_raw_stdout);
+                    }
+                    if (!log.correction_raw_stderr.empty()) {
+                        debug_line("[CORRECTION_RAW_STDERR] " + log.correction_raw_stderr);
+                    }
+                    if (!log.correction_sanitizer_reason.empty()) {
+                        debug_line("[CORRECTION_SANITIZER_REASON] " + log.correction_sanitizer_reason);
+                    }
+                    debug_line("[CORRECTION_ERROR] " + log.correction_error, true);
                     debug_line("[CORRECTION_FAILED] " + log.correction_error, true);
                     debug_line("[CORRECTION_APPLIED] false");
                     diagnostics::set_correction_applied(session_id_, false);
+                    diagnostics::set_correction_debug(session_id_,
+                                                      log.llm_backend,
+                                                      log.correction_error,
+                                                      log.correction_sanitizer_reason,
+                                                      log.correction_raw_stdout,
+                                                      log.correction_raw_stderr);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -366,6 +411,7 @@ private:
             } else if (!log.raw_transcript.empty()) {
                 debug_line("[CORRECTION_APPLIED] false");
                 diagnostics::set_correction_applied(session_id_, false);
+                diagnostics::set_correction_debug(session_id_, "none", "", "", "", "");
                 diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::Correction, "correction not used");
             }
 
@@ -444,6 +490,16 @@ private:
         out << "[CORRECTION_SEGMENTED] " << (log.correction_segmented ? "true" : "false") << "\n";
         out << "[CORRECTION_SEGMENT_COUNT] " << log.correction_segment_count << "\n";
         out << "[CORRECTION_MAX_OUTPUT_TOKENS] " << log.correction_max_output_tokens << "\n";
+        out << "[LLM_BACKEND] " << (log.llm_backend.empty() ? "none" : log.llm_backend) << "\n";
+        if (!log.correction_raw_stdout.empty()) {
+            out << "[CORRECTION_RAW_STDOUT] " << log.correction_raw_stdout << "\n";
+        }
+        if (!log.correction_raw_stderr.empty()) {
+            out << "[CORRECTION_RAW_STDERR] " << log.correction_raw_stderr << "\n";
+        }
+        if (!log.correction_sanitizer_reason.empty()) {
+            out << "[CORRECTION_SANITIZER_REASON] " << log.correction_sanitizer_reason << "\n";
+        }
 
         if (!log.raw_transcript.empty()) {
             out << "[RAW_WHISPER] " << log.raw_transcript << "\n";
@@ -457,6 +513,7 @@ private:
             out << "[CORRECTION_FAILED_SEGMENTS] " << log.correction_failed_segments << "\n";
         }
         if (!log.correction_error.empty()) {
+            out << "[CORRECTION_ERROR] " << log.correction_error << "\n";
             out << "[CORRECTION_FAILED] " << log.correction_error << "\n";
         }
         if (!log.transcribe_error.empty()) {

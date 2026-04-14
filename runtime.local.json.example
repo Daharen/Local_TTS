@@ -10,7 +10,7 @@
   "correction_top_p": 0.0,
   "correction_mode": "formatted",
   "correction_min_p": 0.0,
-  "correction_backend_mode": "resident",
+  "correction_backend_mode": "oneshot",
   "correction_resident_enabled": true,
   "correction_resident_host": "127.0.0.1",
   "correction_resident_port": 18081,

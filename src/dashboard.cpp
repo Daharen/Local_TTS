@@ -58,6 +58,19 @@ std::string format_snapshot(const diagnostics::DiagnosticsSnapshot& snapshot) {
     append_metric(out, "recording-stop to paste", session.from_recording_stop_to_paste_ms);
     append_metric(out, "total hotkey-to-paste", session.total_end_to_end_duration_ms);
     out << "correction applied: " << (session.correction_applied ? "true" : "false") << '\n';
+    out << "backend used: " << (session.correction_backend.empty() ? "n/a" : session.correction_backend) << '\n';
+    if (!session.correction_error.empty()) {
+        out << "correction error: " << session.correction_error << '\n';
+    }
+    if (!session.correction_sanitizer_reason.empty()) {
+        out << "sanitizer reason: " << session.correction_sanitizer_reason << '\n';
+    }
+    if (!session.correction_raw_stdout_excerpt.empty()) {
+        out << "raw stdout excerpt: " << session.correction_raw_stdout_excerpt << '\n';
+    }
+    if (!session.correction_raw_stderr_excerpt.empty()) {
+        out << "raw stderr excerpt: " << session.correction_raw_stderr_excerpt << '\n';
+    }
     out << "segmented: " << (session.segmented ? "true" : "false") << '\n';
     out << "segment count: " << session.segment_count << '\n';
     out << "paste outcome: " << diagnostics::paste_outcome_name(session.paste_outcome) << "\n\n";

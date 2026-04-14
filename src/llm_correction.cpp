@@ -345,8 +345,18 @@ bool block_matches_raw_transcript(const std::string& block, const std::string& r
     return !block_norm.empty() && block_norm == raw_norm;
 }
 
-std::string sanitize_llama_stdout(const std::string& raw_stdout, const std::string& raw_trimmed) {
+struct SanitizationResult {
+    std::string output;
+    std::string reason;
+};
+
+SanitizationResult sanitize_llama_stdout(const std::string& raw_stdout, const std::string& raw_trimmed) {
+    SanitizationResult result{};
     const std::string normalized = normalize_newlines(raw_stdout);
+    if (trim_copy(normalized).empty()) {
+        result.reason = "empty stdout";
+        return result;
+    }
     const std::string raw_norm = collapse_space_copy(raw_trimmed);
     std::string raw_single_line = raw_trimmed;
     std::replace(raw_single_line.begin(), raw_single_line.end(), '\n', ' ');
@@ -391,6 +401,8 @@ std::string sanitize_llama_stdout(const std::string& raw_stdout, const std::stri
         blocks.push_back(trim_copy(current));
     }
 
+    bool saw_meta_only = false;
+    bool saw_raw_match = false;
     for (auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
         const std::string block = trim_copy(*it);
         if (!has_meaningful_text(block)) {
@@ -398,15 +410,62 @@ std::string sanitize_llama_stdout(const std::string& raw_stdout, const std::stri
         }
         const std::string lower = to_lower_copy(block);
         if (is_prompt_echo_line(block, lower) || is_shell_help_line(block, lower) || is_footer_line(block, lower)) {
+            saw_meta_only = true;
             continue;
         }
         if (block_matches_raw_transcript(block, raw_trimmed)) {
+            saw_raw_match = true;
+            result.output = block;
             continue;
         }
-        return block;
+        result.output = block;
+        result.reason = "ok";
+        return result;
     }
 
-    return {};
+    // Conservative fallback: keep the last meaningful non-noise line.
+    std::vector<std::string> meaningful;
+    for (const std::string& raw_line : split_lines(normalized)) {
+        const std::string line = trim_copy(raw_line);
+        if (line.empty()) {
+            continue;
+        }
+        const std::string lower = to_lower_copy(line);
+        const std::string line_norm = collapse_space_copy(line);
+        if (is_banner_line(lower) || is_shell_help_line(line, lower) || is_footer_line(line, lower) ||
+            is_prompt_echo_line(line, lower) || is_raw_transcript_echo_line(line_norm, raw_norm, raw_single_line_norm)) {
+            continue;
+        }
+        if (looks_like_meta_output(line)) {
+            continue;
+        }
+        if (!has_meaningful_text(line)) {
+            continue;
+        }
+        meaningful.push_back(line);
+    }
+
+    if (!meaningful.empty()) {
+        result.output = trim_copy(meaningful.back());
+        result.reason = "fallback_last_meaningful_line";
+        if (block_matches_raw_transcript(result.output, raw_trimmed)) {
+            result.reason = "output matched raw transcript exactly";
+        }
+        return result;
+    }
+
+    if (saw_raw_match) {
+        result.reason = "output matched raw transcript exactly";
+    } else if (candidate_lines.empty()) {
+        result.reason = "only shell noise remained";
+    } else if (saw_meta_only) {
+        result.reason = "only meta output remained";
+    } else if (blocks.empty()) {
+        result.reason = "no structured payload block found";
+    } else {
+        result.reason = "extracted payload was too weak";
+    }
+    return result;
 }
 
 std::string compact_debug_excerpt(const std::string& text, std::size_t limit = 320) {
@@ -1156,7 +1215,9 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
 bool request_resident_correction(const std::string& raw_trimmed,
                                  std::string& corrected_text,
                                  std::string& error_out,
-                                 std::string& debug_stdout) {
+                                 std::string& raw_stdout_excerpt,
+                                 std::string& raw_stderr_excerpt,
+                                 std::string& sanitizer_reason) {
     const std::string sys_prompt = build_system_prompt();
     const std::string user_prompt = build_user_prompt(raw_trimmed);
     const std::string body =
@@ -1226,12 +1287,15 @@ bool request_resident_correction(const std::string& raw_trimmed,
         return false;
     }
 
-    debug_stdout = compact_debug_excerpt(response);
+    raw_stdout_excerpt = compact_debug_excerpt(response, 700);
+    raw_stderr_excerpt.clear();
     corrected_text = trim_copy(extract_content_from_server_response(response));
     if (corrected_text.empty()) {
+        sanitizer_reason = "resident response had no usable content";
         error_out = "resident response had no usable content";
         return false;
     }
+    sanitizer_reason = "ok";
     return true;
 }
 
@@ -1239,24 +1303,47 @@ bool run_single_correction(const std::filesystem::path& llama_exe,
                            const std::filesystem::path& llama_model,
                            const std::string& raw_trimmed,
                            std::string& corrected_text,
-                           std::string& debug_stdout,
                            std::string& error_out,
+                           CorrectionRunInfo* info_out,
                            std::string& backend_used) {
     std::string stdout_text;
     std::string stderr_text;
     std::string resident_reason;
-    if (start_resident_backend_if_needed(llama_model, resident_reason)) {
-        if (request_resident_correction(raw_trimmed, corrected_text, error_out, debug_stdout)) {
+    std::string sanitizer_reason;
+    if (info_out) {
+        info_out->resident_attempted = false;
+        info_out->resident_started = false;
+        info_out->fallback_used = false;
+        info_out->raw_stdout_excerpt.clear();
+        info_out->raw_stderr_excerpt.clear();
+        info_out->raw_error_text.clear();
+        info_out->sanitizer_reason.clear();
+        info_out->sanitized_output.clear();
+    }
+    const std::string mode = to_lower_copy(trim_copy(get_correction_backend_mode()));
+    const bool prefer_resident = mode.empty() || mode == "resident" || mode == "auto";
+    if (info_out) {
+        info_out->resident_attempted = prefer_resident;
+    }
+    if (prefer_resident && start_resident_backend_if_needed(llama_model, resident_reason)) {
+        if (info_out) {
+            info_out->resident_started = true;
+        }
+        if (request_resident_correction(
+                raw_trimmed, corrected_text, error_out, stdout_text, stderr_text, sanitizer_reason)) {
             backend_used = "resident";
             std::cerr << "[LLM_BACKEND] resident\n";
         } else {
             std::cerr << "[LLM_RESIDENT_FALLBACK] " << error_out << "\n";
         }
-    } else if (!resident_reason.empty()) {
+    } else if (prefer_resident && !resident_reason.empty()) {
         std::cerr << "[LLM_RESIDENT_FALLBACK] " << resident_reason << "\n";
     }
 
     if (corrected_text.empty()) {
+        if (info_out && info_out->resident_started) {
+            info_out->fallback_used = true;
+        }
         const std::string system_prompt = build_system_prompt();
         const std::string user_prompt = build_user_prompt(raw_trimmed);
         const LlamaFrontend frontend = detect_llama_frontend(llama_exe);
@@ -1266,20 +1353,53 @@ bool run_single_correction(const std::filesystem::path& llama_exe,
                 llama_exe, llama_model, frontend, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false)) {
             return false;
         }
-        corrected_text = sanitize_llama_stdout(stdout_text, raw_trimmed);
-        debug_stdout = compact_debug_excerpt(stdout_text);
-        backend_used = "oneshot_fallback";
-        std::cerr << "[LLM_BACKEND] oneshot_fallback\n";
+        SanitizationResult sanitized = sanitize_llama_stdout(stdout_text, raw_trimmed);
+        corrected_text = trim_copy(sanitized.output);
+        sanitizer_reason = sanitized.reason;
+        backend_used = (info_out && info_out->resident_started) ? "oneshot_fallback" : "oneshot";
+        std::cerr << "[LLM_BACKEND] " << backend_used << "\n";
     }
 
-    if (corrected_text.empty() || looks_like_meta_output(corrected_text)) {
-        error_out = "Correction output was empty or unusable after sanitization.";
+    if (info_out) {
+        info_out->raw_stdout_excerpt = compact_debug_excerpt(stdout_text, 700);
+        info_out->raw_stderr_excerpt = compact_debug_excerpt(stderr_text, 700);
+        info_out->sanitized_output = compact_debug_excerpt(corrected_text, 700);
+    }
+
+    if (corrected_text.empty()) {
+        if (sanitizer_reason.empty()) {
+            sanitizer_reason = "extracted payload was too weak";
+        }
+        if (info_out) {
+            info_out->sanitizer_reason = sanitizer_reason;
+            info_out->raw_error_text = compact_debug_excerpt(error_out, 400);
+        }
+        error_out = "Correction output rejected: " + sanitizer_reason;
+        return false;
+    }
+
+    if (looks_like_meta_output(corrected_text)) {
+        sanitizer_reason = "only meta output remained";
+        if (info_out) {
+            info_out->sanitizer_reason = sanitizer_reason;
+            info_out->raw_error_text = compact_debug_excerpt(error_out, 400);
+        }
+        error_out = "Correction output rejected: " + sanitizer_reason;
         return false;
     }
 
     if (block_matches_raw_transcript(corrected_text, raw_trimmed)) {
+        sanitizer_reason = "output matched raw transcript exactly";
+        if (info_out) {
+            info_out->sanitizer_reason = sanitizer_reason;
+            info_out->raw_error_text = compact_debug_excerpt(error_out, 400);
+        }
         error_out = "Correction output matched raw transcript.";
         return false;
+    }
+
+    if (info_out) {
+        info_out->sanitizer_reason = sanitizer_reason.empty() ? "ok" : sanitizer_reason;
     }
 
     return true;
@@ -1328,14 +1448,13 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     }
 
     if (!segmented) {
-        std::string debug_stdout;
         std::string backend_used;
-        if (!run_single_correction(llama_exe, llama_model, raw_trimmed, corrected_text, debug_stdout, error_out, backend_used)) {
+        if (!run_single_correction(llama_exe, llama_model, raw_trimmed, corrected_text, error_out, info_out, backend_used)) {
             return false;
         }
         if (info_out) {
             info_out->backend_used = backend_used;
-            info_out->raw_stdout = debug_stdout;
+            info_out->raw_stdout = info_out->raw_stdout_excerpt;
             info_out->clean_output = corrected_text;
             info_out->segment_count = 1;
         }
@@ -1360,14 +1479,19 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     corrected_segments.reserve(segments.size());
     std::vector<int> failed;
     std::string raw_stdout_debug;
+    std::string raw_stderr_debug;
+    std::string sanitizer_reason_debug;
     std::string backend_used = "none";
+    bool any_resident_attempted = false;
+    bool any_resident_started = false;
+    bool any_fallback_used = false;
 
     for (std::size_t i = 0; i < segments.size(); ++i) {
         std::string seg_corrected;
-        std::string seg_stdout;
         std::string seg_error;
         std::string seg_backend;
-        if (run_single_correction(llama_exe, llama_model, segments[i], seg_corrected, seg_stdout, seg_error, seg_backend)) {
+        CorrectionRunInfo seg_info;
+        if (run_single_correction(llama_exe, llama_model, segments[i], seg_corrected, seg_error, &seg_info, seg_backend)) {
             corrected_segments.push_back(seg_corrected);
             if (backend_used == "none") {
                 backend_used = seg_backend;
@@ -1378,11 +1502,26 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
             corrected_segments.push_back(segments[i]);
             failed.push_back(static_cast<int>(i));
         }
-        if (!seg_stdout.empty()) {
+        any_resident_attempted = any_resident_attempted || seg_info.resident_attempted;
+        any_resident_started = any_resident_started || seg_info.resident_started;
+        any_fallback_used = any_fallback_used || seg_info.fallback_used;
+        if (!seg_info.raw_stdout_excerpt.empty()) {
             if (!raw_stdout_debug.empty()) {
                 raw_stdout_debug += " | ";
             }
-            raw_stdout_debug += "seg" + std::to_string(i) + ":" + seg_stdout;
+            raw_stdout_debug += "seg" + std::to_string(i) + ":" + seg_info.raw_stdout_excerpt;
+        }
+        if (!seg_info.raw_stderr_excerpt.empty()) {
+            if (!raw_stderr_debug.empty()) {
+                raw_stderr_debug += " | ";
+            }
+            raw_stderr_debug += "seg" + std::to_string(i) + ":" + seg_info.raw_stderr_excerpt;
+        }
+        if (!seg_info.sanitizer_reason.empty()) {
+            if (!sanitizer_reason_debug.empty()) {
+                sanitizer_reason_debug += " | ";
+            }
+            sanitizer_reason_debug += "seg" + std::to_string(i) + ":" + seg_info.sanitizer_reason;
         }
     }
 
@@ -1393,7 +1532,14 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
 
     if (info_out) {
         info_out->backend_used = backend_used;
-        info_out->raw_stdout = compact_debug_excerpt(raw_stdout_debug, 500);
+        info_out->raw_stdout_excerpt = compact_debug_excerpt(raw_stdout_debug, 700);
+        info_out->raw_stderr_excerpt = compact_debug_excerpt(raw_stderr_debug, 700);
+        info_out->raw_stdout = info_out->raw_stdout_excerpt;
+        info_out->sanitizer_reason = compact_debug_excerpt(sanitizer_reason_debug, 500);
+        info_out->sanitized_output = compact_debug_excerpt(corrected_text, 700);
+        info_out->resident_attempted = any_resident_attempted;
+        info_out->resident_started = any_resident_started;
+        info_out->fallback_used = any_fallback_used;
         info_out->clean_output = corrected_text;
         info_out->segment_count = static_cast<int>(segments.size());
         info_out->failed_segment_indices = failed;
@@ -1434,9 +1580,9 @@ int run_llm_test_command(const std::string& input_text) {
     std::cout << "[LLM_TEST_SEGMENTED] " << (info.segmented ? "true" : "false") << "\n";
     std::cout << "[LLM_TEST_SEGMENT_COUNT] " << info.segment_count << "\n";
     std::cout << "[LLM_TEST_MAX_OUTPUT_TOKENS] " << info.max_output_tokens << "\n";
-    if (!info.raw_stdout.empty() && info.raw_stdout != info.clean_output) {
-        std::cout << "[LLM_TEST_RAW_STDOUT] " << info.raw_stdout << "\n";
-    }
+    std::cout << "[LLM_TEST_RAW_STDOUT] " << info.raw_stdout_excerpt << "\n";
+    std::cout << "[LLM_TEST_RAW_STDERR] " << info.raw_stderr_excerpt << "\n";
+    std::cout << "[LLM_TEST_SANITIZER_REASON] " << info.sanitizer_reason << "\n";
     if (!info.clean_output.empty()) {
         std::cout << "[LLM_TEST_CLEAN_OUTPUT] " << info.clean_output << "\n";
     }
