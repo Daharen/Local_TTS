@@ -170,7 +170,11 @@ public:
                               const std::string& resident_phase,
                               int resident_remaining_budget_ms,
                               int resident_request_count,
-                              const std::string& resident_last_error) noexcept {
+                              const std::string& resident_last_endpoint,
+                              int resident_last_status,
+                              const std::string& resident_last_error,
+                              const std::string& resident_reset_reason,
+                              bool resident_fallback_used) noexcept {
         update_session(session_id, [&](SessionWork& s) {
             s.snapshot.correction_backend = backend;
             s.snapshot.correction_error = error;
@@ -185,7 +189,11 @@ public:
             s.snapshot.resident_phase = resident_phase;
             s.snapshot.resident_remaining_budget_ms = resident_remaining_budget_ms;
             s.snapshot.resident_request_count = resident_request_count;
+            s.snapshot.resident_last_endpoint = resident_last_endpoint;
+            s.snapshot.resident_last_status = resident_last_status;
             s.snapshot.resident_last_error = resident_last_error;
+            s.snapshot.resident_reset_reason = resident_reset_reason;
+            s.snapshot.resident_fallback_used = resident_fallback_used;
         });
     }
 
@@ -413,7 +421,11 @@ void set_correction_debug(uint64_t session_id,
                           const std::string& resident_phase,
                           int resident_remaining_budget_ms,
                           int resident_request_count,
-                          const std::string& resident_last_error) noexcept {
+                          const std::string& resident_last_endpoint,
+                          int resident_last_status,
+                          const std::string& resident_last_error,
+                          const std::string& resident_reset_reason,
+                          bool resident_fallback_used) noexcept {
     store().set_correction_debug(session_id,
                                  backend,
                                  error,
@@ -428,7 +440,11 @@ void set_correction_debug(uint64_t session_id,
                                  resident_phase,
                                  resident_remaining_budget_ms,
                                  resident_request_count,
-                                 resident_last_error);
+                                 resident_last_endpoint,
+                                 resident_last_status,
+                                 resident_last_error,
+                                 resident_reset_reason,
+                                 resident_fallback_used);
 }
 
 void set_segmentation(uint64_t session_id, bool segmented, int segment_count) noexcept {

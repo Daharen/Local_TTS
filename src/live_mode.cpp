@@ -165,6 +165,7 @@ private:
         int resident_last_status = 0;
         std::string resident_last_error;
         std::string resident_reset_reason;
+        bool resident_fallback_used = false;
         int resident_gpu_layers = 0;
         int resident_ctx_size = 0;
         int resident_threads = 0;
@@ -398,6 +399,7 @@ private:
                     log.resident_last_status = info.resident_last_status;
                     log.resident_last_error = info.resident_last_error;
                     log.resident_reset_reason = info.resident_reset_reason;
+                    log.resident_fallback_used = info.fallback_used;
                     log.resident_gpu_layers = info.resident_gpu_layers;
                     log.resident_ctx_size = info.resident_ctx_size;
                     log.resident_threads = info.resident_threads;
@@ -452,6 +454,7 @@ private:
                     if (!log.resident_reset_reason.empty()) {
                         debug_line("[LLM_RESIDENT_RESET_REASON] " + log.resident_reset_reason);
                     }
+                    debug_line(std::string("[LLM_RESIDENT_FALLBACK_USED] ") + (log.resident_fallback_used ? "true" : "false"));
                     debug_line("[LLM_RESIDENT_CONFIG] gpu_layers=" + std::to_string(log.resident_gpu_layers) +
                                " ctx=" + std::to_string(log.resident_ctx_size) +
                                " threads=" + std::to_string(log.resident_threads));
@@ -493,7 +496,11 @@ private:
                                                       log.resident_phase,
                                                       log.resident_remaining_budget_ms,
                                                       log.resident_request_count,
-                                                      log.resident_last_error);
+                                                      log.resident_last_endpoint,
+                                                      log.resident_last_status,
+                                                      log.resident_last_error,
+                                                      log.resident_reset_reason,
+                                                      log.resident_fallback_used);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -524,6 +531,7 @@ private:
                     log.resident_last_status = info.resident_last_status;
                     log.resident_last_error = info.resident_last_error;
                     log.resident_reset_reason = info.resident_reset_reason;
+                    log.resident_fallback_used = info.fallback_used;
                     log.resident_gpu_layers = info.resident_gpu_layers;
                     log.resident_ctx_size = info.resident_ctx_size;
                     log.resident_threads = info.resident_threads;
@@ -573,6 +581,7 @@ private:
                     if (!log.resident_reset_reason.empty()) {
                         debug_line("[LLM_RESIDENT_RESET_REASON] " + log.resident_reset_reason);
                     }
+                    debug_line(std::string("[LLM_RESIDENT_FALLBACK_USED] ") + (log.resident_fallback_used ? "true" : "false"));
                     debug_line("[LLM_RESIDENT_CONFIG] gpu_layers=" + std::to_string(log.resident_gpu_layers) +
                                " ctx=" + std::to_string(log.resident_ctx_size) +
                                " threads=" + std::to_string(log.resident_threads));
@@ -612,7 +621,11 @@ private:
                                                       log.resident_phase,
                                                       log.resident_remaining_budget_ms,
                                                       log.resident_request_count,
-                                                      log.resident_last_error);
+                                                      log.resident_last_endpoint,
+                                                      log.resident_last_status,
+                                                      log.resident_last_error,
+                                                      log.resident_reset_reason,
+                                                      log.resident_fallback_used);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -623,7 +636,8 @@ private:
             } else if (!log.raw_transcript.empty()) {
                 debug_line("[CORRECTION_APPLIED] false");
                 diagnostics::set_correction_applied(session_id_, false);
-                diagnostics::set_correction_debug(session_id_, "none", "", "", "", "", false, false, "", "", 0, "", 0, 0, "");
+                diagnostics::set_correction_debug(
+                    session_id_, "none", "", "", "", "", false, false, "", "", 0, "", 0, 0, "", 0, "", "", false);
                 diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::Correction, "correction not used");
             }
 
@@ -761,6 +775,7 @@ private:
         if (!log.resident_reset_reason.empty()) {
             out << "[LLM_RESIDENT_RESET_REASON] " << log.resident_reset_reason << "\n";
         }
+        out << "[LLM_RESIDENT_FALLBACK_USED] " << (log.resident_fallback_used ? "true" : "false") << "\n";
         out << "[LLM_RESIDENT_CONFIG] gpu_layers=" << log.resident_gpu_layers
             << " ctx=" << log.resident_ctx_size
             << " threads=" << log.resident_threads << "\n";

@@ -87,7 +87,11 @@ struct PipelineSnapshot {
     std::string resident_phase;
     int resident_remaining_budget_ms = 0;
     int resident_request_count = 0;
+    std::string resident_last_endpoint;
+    int resident_last_status = 0;
     std::string resident_last_error;
+    std::string resident_reset_reason;
+    bool resident_fallback_used = false;
     bool segmented = false;
     int segment_count = 0;
     PasteOutcome paste_outcome = PasteOutcome::Unknown;
@@ -140,7 +144,11 @@ void set_correction_debug(uint64_t session_id,
                           const std::string& resident_phase,
                           int resident_remaining_budget_ms,
                           int resident_request_count,
-                          const std::string& resident_last_error) noexcept;
+                          const std::string& resident_last_endpoint,
+                          int resident_last_status,
+                          const std::string& resident_last_error,
+                          const std::string& resident_reset_reason,
+                          bool resident_fallback_used) noexcept;
 void set_segmentation(uint64_t session_id, bool segmented, int segment_count) noexcept;
 void set_paste_outcome(uint64_t session_id, PasteOutcome outcome) noexcept;
 void set_recording_stop_time(uint64_t session_id) noexcept;
@@ -179,7 +187,11 @@ inline void set_correction_debug(uint64_t,
                                  const std::string&,
                                  int,
                                  int,
-                                 const std::string&) noexcept {}
+                                 const std::string&,
+                                 int,
+                                 const std::string&,
+                                 const std::string&,
+                                 bool) noexcept {}
 inline void set_segmentation(uint64_t, bool, int) noexcept {}
 inline void set_paste_outcome(uint64_t, PasteOutcome) noexcept {}
 inline void set_recording_stop_time(uint64_t) noexcept {}

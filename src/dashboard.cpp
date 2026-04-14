@@ -79,9 +79,19 @@ std::string format_snapshot(const diagnostics::DiagnosticsSnapshot& snapshot) {
     if (session.resident_request_count > 0) {
         out << "resident request count: " << session.resident_request_count << '\n';
     }
+    if (!session.resident_last_endpoint.empty()) {
+        out << "resident last endpoint: " << session.resident_last_endpoint << '\n';
+    }
+    if (session.resident_last_status > 0) {
+        out << "resident last HTTP status: " << session.resident_last_status << '\n';
+    }
     if (!session.resident_last_error.empty()) {
         out << "resident last error: " << session.resident_last_error << '\n';
     }
+    if (!session.resident_reset_reason.empty()) {
+        out << "resident reset reason: " << session.resident_reset_reason << '\n';
+    }
+    out << "resident fallback used: " << (session.resident_fallback_used ? "true" : "false") << '\n';
     if (!session.correction_error.empty()) {
         out << "correction error: " << session.correction_error << '\n';
     }
