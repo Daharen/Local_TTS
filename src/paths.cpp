@@ -90,6 +90,42 @@ std::string get_correction_mode() {
     return get_app_config().correction_mode;
 }
 
+std::string get_correction_backend_mode() {
+    return get_app_config().correction_backend_mode;
+}
+
+bool is_correction_resident_enabled() {
+    return get_app_config().correction_resident_enabled;
+}
+
+std::string get_correction_resident_host() {
+    return get_app_config().correction_resident_host;
+}
+
+int get_correction_resident_port() {
+    return get_app_config().correction_resident_port;
+}
+
+int get_correction_resident_ctx_size() {
+    return get_app_config().correction_resident_ctx_size;
+}
+
+int get_correction_resident_gpu_layers() {
+    return get_app_config().correction_resident_gpu_layers;
+}
+
+int get_correction_resident_threads() {
+    return get_app_config().correction_resident_threads;
+}
+
+int get_correction_resident_startup_timeout_ms() {
+    return get_app_config().correction_resident_startup_timeout_ms;
+}
+
+int get_correction_resident_request_timeout_ms() {
+    return get_app_config().correction_resident_request_timeout_ms;
+}
+
 std::string describe_paths_json() {
     const auto repo = get_repo_root().string();
     const auto data = get_large_data_root().string();
@@ -115,8 +151,16 @@ std::string describe_paths_json() {
         << "  \"correction_segment_max_chars\": " << get_correction_segment_max_chars() << ",\n"
         << "  \"correction_segment_overlap_chars\": " << get_correction_segment_overlap_chars() << ",\n"
         << "  \"correction_force_segmentation_threshold_chars\": " << get_correction_force_segmentation_threshold_chars() << ",\n"
-        << "  \"correction_mode\": \"" << escape_json(get_correction_mode()) << "\"\n"
+        << "  \"correction_mode\": \"" << escape_json(get_correction_mode()) << "\",\n"
+        << "  \"correction_backend_mode\": \"" << escape_json(get_correction_backend_mode()) << "\",\n"
+        << "  \"correction_resident_enabled\": " << (is_correction_resident_enabled() ? "true" : "false") << ",\n"
+        << "  \"correction_resident_host\": \"" << escape_json(get_correction_resident_host()) << "\",\n"
+        << "  \"correction_resident_port\": " << get_correction_resident_port() << ",\n"
+        << "  \"correction_resident_ctx_size\": " << get_correction_resident_ctx_size() << ",\n"
+        << "  \"correction_resident_gpu_layers\": " << get_correction_resident_gpu_layers() << ",\n"
+        << "  \"correction_resident_threads\": " << get_correction_resident_threads() << ",\n"
+        << "  \"correction_resident_startup_timeout_ms\": " << get_correction_resident_startup_timeout_ms() << ",\n"
+        << "  \"correction_resident_request_timeout_ms\": " << get_correction_resident_request_timeout_ms() << "\n"
         << "}";
     return out.str();
 }
-

@@ -34,5 +34,5 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(local_tts PRIVATE user32 shell32 winmm)
+    target_link_libraries(local_tts PRIVATE user32 shell32 winmm winhttp)
 endif()

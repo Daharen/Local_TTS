@@ -181,6 +181,53 @@ void apply_config_json(AppConfig& config, const std::string& json) {
         config.correction_mode = correction_mode;
     }
 
+    const auto correction_backend_mode = trim_copy(find_json_value_token(json, "correction_backend_mode"));
+    if (!correction_backend_mode.empty()) {
+        config.correction_backend_mode = correction_backend_mode;
+    }
+
+    const auto correction_resident_enabled = find_json_value_token(json, "correction_resident_enabled");
+    if (!correction_resident_enabled.empty()) {
+        config.correction_resident_enabled = parse_bool_value(correction_resident_enabled, config.correction_resident_enabled);
+    }
+
+    const auto correction_resident_host = trim_copy(find_json_value_token(json, "correction_resident_host"));
+    if (!correction_resident_host.empty()) {
+        config.correction_resident_host = correction_resident_host;
+    }
+
+    const auto correction_resident_port = find_json_value_token(json, "correction_resident_port");
+    if (!correction_resident_port.empty()) {
+        config.correction_resident_port = parse_int_value(correction_resident_port, config.correction_resident_port);
+    }
+
+    const auto correction_resident_ctx_size = find_json_value_token(json, "correction_resident_ctx_size");
+    if (!correction_resident_ctx_size.empty()) {
+        config.correction_resident_ctx_size = parse_int_value(correction_resident_ctx_size, config.correction_resident_ctx_size);
+    }
+
+    const auto correction_resident_gpu_layers = find_json_value_token(json, "correction_resident_gpu_layers");
+    if (!correction_resident_gpu_layers.empty()) {
+        config.correction_resident_gpu_layers = parse_int_value(correction_resident_gpu_layers, config.correction_resident_gpu_layers);
+    }
+
+    const auto correction_resident_threads = find_json_value_token(json, "correction_resident_threads");
+    if (!correction_resident_threads.empty()) {
+        config.correction_resident_threads = parse_int_value(correction_resident_threads, config.correction_resident_threads);
+    }
+
+    const auto correction_resident_startup_timeout_ms = find_json_value_token(json, "correction_resident_startup_timeout_ms");
+    if (!correction_resident_startup_timeout_ms.empty()) {
+        config.correction_resident_startup_timeout_ms =
+            parse_int_value(correction_resident_startup_timeout_ms, config.correction_resident_startup_timeout_ms);
+    }
+
+    const auto correction_resident_request_timeout_ms = find_json_value_token(json, "correction_resident_request_timeout_ms");
+    if (!correction_resident_request_timeout_ms.empty()) {
+        config.correction_resident_request_timeout_ms =
+            parse_int_value(correction_resident_request_timeout_ms, config.correction_resident_request_timeout_ms);
+    }
+
     const auto correction_max_output_tokens = find_json_value_token(json, "correction_max_output_tokens");
     if (!correction_max_output_tokens.empty()) {
         config.correction_max_output_tokens = parse_int_value(correction_max_output_tokens, config.correction_max_output_tokens);
@@ -254,6 +301,41 @@ void apply_environment_overrides(AppConfig& config) {
             config.correction_mode = value;
         }
     }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_BACKEND_MODE")) {
+        const auto value = trim_copy(env);
+        if (!value.empty()) {
+            config.correction_backend_mode = value;
+        }
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_ENABLED")) {
+        config.correction_resident_enabled = parse_bool_value(trim_copy(env), config.correction_resident_enabled);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_HOST")) {
+        const auto value = trim_copy(env);
+        if (!value.empty()) {
+            config.correction_resident_host = value;
+        }
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_PORT")) {
+        config.correction_resident_port = parse_int_value(trim_copy(env), config.correction_resident_port);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_CTX_SIZE")) {
+        config.correction_resident_ctx_size = parse_int_value(trim_copy(env), config.correction_resident_ctx_size);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_GPU_LAYERS")) {
+        config.correction_resident_gpu_layers = parse_int_value(trim_copy(env), config.correction_resident_gpu_layers);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_THREADS")) {
+        config.correction_resident_threads = parse_int_value(trim_copy(env), config.correction_resident_threads);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_STARTUP_TIMEOUT_MS")) {
+        config.correction_resident_startup_timeout_ms =
+            parse_int_value(trim_copy(env), config.correction_resident_startup_timeout_ms);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_RESIDENT_REQUEST_TIMEOUT_MS")) {
+        config.correction_resident_request_timeout_ms =
+            parse_int_value(trim_copy(env), config.correction_resident_request_timeout_ms);
+    }
     if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_MAX_OUTPUT_TOKENS")) {
         config.correction_max_output_tokens = parse_int_value(trim_copy(env), config.correction_max_output_tokens);
     }
@@ -284,6 +366,15 @@ AppConfig make_default_config() {
     config.correction_top_p = 0.0;
     config.correction_min_p = 0.0;
     config.correction_mode = "formatted";
+    config.correction_backend_mode = "resident";
+    config.correction_resident_enabled = true;
+    config.correction_resident_host = "127.0.0.1";
+    config.correction_resident_port = 18081;
+    config.correction_resident_ctx_size = 4096;
+    config.correction_resident_gpu_layers = -1;
+    config.correction_resident_threads = 8;
+    config.correction_resident_startup_timeout_ms = 8000;
+    config.correction_resident_request_timeout_ms = 15000;
     config.correction_max_output_tokens = 512;
     config.correction_segment_max_chars = 1600;
     config.correction_segment_overlap_chars = 200;
@@ -309,4 +400,3 @@ const AppConfig& get_app_config() {
     static const AppConfig config = load_app_config();
     return config;
 }
-

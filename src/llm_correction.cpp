@@ -3,11 +3,15 @@
 #include "paths.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -15,6 +19,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
 #endif
 
 namespace {
@@ -621,6 +627,221 @@ bool read_handle_all(HANDLE handle, std::string& out) {
     return last == ERROR_BROKEN_PIPE || last == ERROR_SUCCESS;
 }
 
+std::string json_escape(const std::string& input) {
+    std::string out;
+    out.reserve(input.size() + 16);
+    for (const unsigned char ch : input) {
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out.push_back(static_cast<char>(ch)); break;
+        }
+    }
+    return out;
+}
+
+std::string extract_json_string_value(const std::string& json, const std::string& key) {
+    const std::string needle = "\"" + key + "\"";
+    const auto key_pos = json.find(needle);
+    if (key_pos == std::string::npos) {
+        return {};
+    }
+    const auto colon = json.find(':', key_pos + needle.size());
+    if (colon == std::string::npos) {
+        return {};
+    }
+    auto value_pos = json.find('"', colon + 1);
+    if (value_pos == std::string::npos) {
+        return {};
+    }
+    std::string out;
+    for (std::size_t i = value_pos + 1; i < json.size(); ++i) {
+        const char c = json[i];
+        if (c == '\\') {
+            if (i + 1 >= json.size()) {
+                return {};
+            }
+            const char next = json[++i];
+            switch (next) {
+                case '"': out.push_back('"'); break;
+                case '\\': out.push_back('\\'); break;
+                case 'n': out.push_back('\n'); break;
+                case 'r': out.push_back('\r'); break;
+                case 't': out.push_back('\t'); break;
+                default: out.push_back(next); break;
+            }
+            continue;
+        }
+        if (c == '"') {
+            return out;
+        }
+        out.push_back(c);
+    }
+    return {};
+}
+
+std::string extract_content_from_server_response(const std::string& body) {
+    std::string content = extract_json_string_value(body, "content");
+    if (!content.empty()) {
+        return content;
+    }
+
+    const auto msg_pos = body.find("\"message\"");
+    if (msg_pos != std::string::npos) {
+        content = extract_json_string_value(body.substr(msg_pos), "content");
+        if (!content.empty()) {
+            return content;
+        }
+    }
+    return {};
+}
+
+bool run_process_capture_output(const std::filesystem::path& exe,
+                                const std::vector<std::wstring>& args,
+                                std::string& output,
+                                std::string& error_out) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE read_handle = nullptr;
+    HANDLE write_handle = nullptr;
+    if (!CreatePipe(&read_handle, &write_handle, &sa, 0) || !SetHandleInformation(read_handle, HANDLE_FLAG_INHERIT, 0)) {
+        error_out = "Failed to create process capture pipe.";
+        return false;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = write_handle;
+    si.hStdError = write_handle;
+
+    PROCESS_INFORMATION pi{};
+    std::vector<std::wstring> full_args;
+    full_args.push_back(exe.wstring());
+    full_args.insert(full_args.end(), args.begin(), args.end());
+    std::wstring command = build_command_line(full_args);
+    std::vector<wchar_t> cmdline(command.begin(), command.end());
+    cmdline.push_back(L'\0');
+
+    const BOOL started = CreateProcessW(nullptr,
+                                        cmdline.data(),
+                                        nullptr,
+                                        nullptr,
+                                        TRUE,
+                                        CREATE_NO_WINDOW,
+                                        nullptr,
+                                        nullptr,
+                                        &si,
+                                        &pi);
+    CloseHandle(write_handle);
+    if (!started) {
+        CloseHandle(read_handle);
+        error_out = "Failed to run process for capability detection.";
+        return false;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    read_handle_all(read_handle, output);
+    CloseHandle(read_handle);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+struct ResidentBackendState {
+    std::mutex mutex;
+    bool startup_attempted = false;
+    bool ready = false;
+    std::string startup_error;
+    std::filesystem::path server_exe;
+    std::filesystem::path llama_model;
+    PROCESS_INFORMATION process{};
+    bool process_running = false;
+};
+
+ResidentBackendState& resident_state() {
+    static ResidentBackendState state;
+    return state;
+}
+
+std::filesystem::path find_llama_server_executable_path(const std::filesystem::path& llama_root) {
+    const std::vector<std::filesystem::path> candidates = {
+        llama_root / "build" / "bin" / "Release" / "llama-server.exe",
+        llama_root / "build" / "bin" / "llama-server.exe",
+        llama_root / "build" / "Release" / "llama-server.exe",
+        llama_root / "build" / "llama-server.exe",
+        llama_root / "build" / "bin" / "Release" / "server.exe",
+        llama_root / "build" / "bin" / "server.exe",
+        llama_root / "build" / "Release" / "server.exe",
+        llama_root / "build" / "server.exe",
+    };
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+bool process_supports_flag(const std::string& help_text, const std::string& flag) {
+    return help_text.find(flag) != std::string::npos;
+}
+
+bool ping_resident_server(const std::string& host, int port, int timeout_ms, std::string* response_out = nullptr) {
+    std::wstring host_w = utf8_to_wide(host);
+    HINTERNET session = WinHttpOpen(L"LocalTTS/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        return false;
+    }
+
+    HINTERNET connection = WinHttpConnect(session, host_w.c_str(), static_cast<INTERNET_PORT>(port), 0);
+    if (!connection) {
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    HINTERNET request = WinHttpOpenRequest(connection, L"GET", L"/health", nullptr, WINHTTP_NO_REFERER,
+                                           WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (!request) {
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+    WinHttpSetTimeouts(request, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+
+    bool ok = WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+              WinHttpReceiveResponse(request, nullptr);
+    if (ok && response_out) {
+        response_out->clear();
+        DWORD size = 0;
+        do {
+            size = 0;
+            if (!WinHttpQueryDataAvailable(request, &size) || size == 0) {
+                break;
+            }
+            std::string chunk(size, '\0');
+            DWORD downloaded = 0;
+            if (!WinHttpReadData(request, chunk.data(), size, &downloaded) || downloaded == 0) {
+                break;
+            }
+            chunk.resize(downloaded);
+            response_out->append(chunk);
+        } while (size > 0);
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return ok;
+}
+
 bool run_llama_process(const std::filesystem::path& exe,
                        const std::filesystem::path& model,
                        LlamaFrontend frontend,
@@ -787,26 +1008,269 @@ bool run_llama_process(const std::filesystem::path& exe,
     return true;
 }
 
+bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, std::string& reason_out) {
+    reason_out.clear();
+    if (!is_correction_resident_enabled()) {
+        reason_out = "resident disabled in config";
+        return false;
+    }
+
+    const std::string mode = to_lower_copy(trim_copy(get_correction_backend_mode()));
+    if (!mode.empty() && mode != "resident" && mode != "auto") {
+        reason_out = "backend mode is not resident";
+        return false;
+    }
+
+    auto& state = resident_state();
+    std::lock_guard<std::mutex> guard(state.mutex);
+    if (state.ready && state.process_running) {
+        return true;
+    }
+    if (state.startup_attempted && !state.ready) {
+        reason_out = state.startup_error.empty() ? "previous resident startup failed" : state.startup_error;
+        return false;
+    }
+
+    state.startup_attempted = true;
+    state.startup_error.clear();
+    state.ready = false;
+    state.server_exe = find_llama_server_executable_path(get_llama_cpp_root());
+    if (state.server_exe.empty()) {
+        state.startup_error = "llama server executable not found under configured llama_cpp_root";
+        reason_out = state.startup_error;
+        std::cerr << "[LLM_RESIDENT_START] failed: " << state.startup_error << "\n";
+        return false;
+    }
+
+    std::string help_text;
+    std::string help_err;
+    if (!run_process_capture_output(state.server_exe, {L"--help"}, help_text, help_err)) {
+        help_text.clear();
+    }
+
+    std::vector<std::wstring> args = {state.server_exe.wstring(), L"-m", llama_model.wstring()};
+    const std::wstring host_w = utf8_to_wide(get_correction_resident_host());
+    const int port = get_correction_resident_port();
+
+    if (process_supports_flag(help_text, "--host")) {
+        args.push_back(L"--host");
+        args.push_back(host_w);
+    } else if (process_supports_flag(help_text, "-host")) {
+        args.push_back(L"-host");
+        args.push_back(host_w);
+    }
+
+    if (process_supports_flag(help_text, "--port")) {
+        args.push_back(L"--port");
+        args.push_back(number_to_wide(port));
+    } else if (process_supports_flag(help_text, "-port")) {
+        args.push_back(L"-port");
+        args.push_back(number_to_wide(port));
+    }
+
+    if (process_supports_flag(help_text, "--ctx-size")) {
+        args.push_back(L"--ctx-size");
+        args.push_back(number_to_wide(get_correction_resident_ctx_size()));
+    } else if (process_supports_flag(help_text, "-c")) {
+        args.push_back(L"-c");
+        args.push_back(number_to_wide(get_correction_resident_ctx_size()));
+    }
+
+    if (process_supports_flag(help_text, "--threads")) {
+        args.push_back(L"--threads");
+        args.push_back(number_to_wide(get_correction_resident_threads()));
+    } else if (process_supports_flag(help_text, "-t")) {
+        args.push_back(L"-t");
+        args.push_back(number_to_wide(get_correction_resident_threads()));
+    }
+
+    if (process_supports_flag(help_text, "--gpu-layers")) {
+        args.push_back(L"--gpu-layers");
+        args.push_back(number_to_wide(get_correction_resident_gpu_layers()));
+    } else if (process_supports_flag(help_text, "-ngl")) {
+        args.push_back(L"-ngl");
+        args.push_back(number_to_wide(get_correction_resident_gpu_layers()));
+    }
+
+    if (process_supports_flag(help_text, "--jinja")) {
+        args.push_back(L"--jinja");
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring command = build_command_line(args);
+    std::vector<wchar_t> cmdline(command.begin(), command.end());
+    cmdline.push_back(L'\0');
+
+    const BOOL started = CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    if (!started) {
+        state.startup_error = "failed to start resident llama server process";
+        reason_out = state.startup_error;
+        std::cerr << "[LLM_RESIDENT_START] failed: " << state.startup_error << "\n";
+        return false;
+    }
+
+    state.process = pi;
+    state.process_running = true;
+    state.llama_model = llama_model;
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(get_correction_resident_startup_timeout_ms());
+    while (std::chrono::steady_clock::now() < deadline) {
+        DWORD exit_code = STILL_ACTIVE;
+        if (GetExitCodeProcess(state.process.hProcess, &exit_code) && exit_code != STILL_ACTIVE) {
+            state.process_running = false;
+            state.startup_error = "resident server exited during startup";
+            reason_out = state.startup_error;
+            break;
+        }
+        if (ping_resident_server(get_correction_resident_host(), get_correction_resident_port(), 300)) {
+            state.ready = true;
+            std::cerr << "[LLM_RESIDENT_START] ok\n";
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    }
+
+    if (!state.ready) {
+        state.startup_error = state.startup_error.empty() ? "resident server startup timed out" : state.startup_error;
+        reason_out = state.startup_error;
+        std::cerr << "[LLM_RESIDENT_START] failed: " << state.startup_error << "\n";
+        if (state.process_running) {
+            TerminateProcess(state.process.hProcess, 1);
+            state.process_running = false;
+        }
+        if (state.process.hThread) {
+            CloseHandle(state.process.hThread);
+            state.process.hThread = nullptr;
+        }
+        if (state.process.hProcess) {
+            CloseHandle(state.process.hProcess);
+            state.process.hProcess = nullptr;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool request_resident_correction(const std::string& raw_trimmed,
+                                 std::string& corrected_text,
+                                 std::string& error_out,
+                                 std::string& debug_stdout) {
+    const std::string sys_prompt = build_system_prompt();
+    const std::string user_prompt = build_user_prompt(raw_trimmed);
+    const std::string body =
+        "{\"messages\":[{\"role\":\"system\",\"content\":\"" + json_escape(sys_prompt) + "\"},{\"role\":\"user\",\"content\":\"" +
+        json_escape(user_prompt) + "\"}],\"temperature\":" + std::to_string(get_correction_temperature()) +
+        ",\"top_k\":" + std::to_string(get_correction_top_k()) + ",\"top_p\":" + std::to_string(get_correction_top_p()) +
+        ",\"min_p\":" + std::to_string(get_correction_min_p()) +
+        ",\"n_predict\":" + std::to_string(get_correction_max_output_tokens()) + "}";
+
+    HINTERNET session = WinHttpOpen(L"LocalTTS/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        error_out = "WinHttpOpen failed";
+        return false;
+    }
+
+    const std::wstring host_w = utf8_to_wide(get_correction_resident_host());
+    HINTERNET connection =
+        WinHttpConnect(session, host_w.c_str(), static_cast<INTERNET_PORT>(get_correction_resident_port()), 0);
+    if (!connection) {
+        WinHttpCloseHandle(session);
+        error_out = "WinHttpConnect failed";
+        return false;
+    }
+
+    HINTERNET request = WinHttpOpenRequest(connection, L"POST", L"/v1/chat/completions", nullptr, WINHTTP_NO_REFERER,
+                                           WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (!request) {
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        error_out = "WinHttpOpenRequest failed";
+        return false;
+    }
+
+    const int timeout = get_correction_resident_request_timeout_ms();
+    WinHttpSetTimeouts(request, timeout, timeout, timeout, timeout);
+    const std::wstring headers = L"Content-Type: application/json\r\n";
+    BOOL ok = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
+                                 reinterpret_cast<LPVOID>(const_cast<char*>(body.data())), static_cast<DWORD>(body.size()),
+                                 static_cast<DWORD>(body.size()), 0);
+    ok = ok && WinHttpReceiveResponse(request, nullptr);
+
+    std::string response;
+    if (ok) {
+        DWORD size = 0;
+        do {
+            size = 0;
+            if (!WinHttpQueryDataAvailable(request, &size) || size == 0) {
+                break;
+            }
+            std::string chunk(size, '\0');
+            DWORD downloaded = 0;
+            if (!WinHttpReadData(request, chunk.data(), size, &downloaded) || downloaded == 0) {
+                break;
+            }
+            chunk.resize(downloaded);
+            response += chunk;
+        } while (size > 0);
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+
+    if (!ok) {
+        error_out = "resident HTTP request failed";
+        return false;
+    }
+
+    debug_stdout = compact_debug_excerpt(response);
+    corrected_text = trim_copy(extract_content_from_server_response(response));
+    if (corrected_text.empty()) {
+        error_out = "resident response had no usable content";
+        return false;
+    }
+    return true;
+}
+
 bool run_single_correction(const std::filesystem::path& llama_exe,
                            const std::filesystem::path& llama_model,
                            const std::string& raw_trimmed,
                            std::string& corrected_text,
                            std::string& debug_stdout,
-                           std::string& error_out) {
+                           std::string& error_out,
+                           std::string& backend_used) {
     std::string stdout_text;
     std::string stderr_text;
-    const std::string system_prompt = build_system_prompt();
-    const std::string user_prompt = build_user_prompt(raw_trimmed);
-    const LlamaFrontend frontend = detect_llama_frontend(llama_exe);
-    if (!run_llama_process(
-            llama_exe, llama_model, frontend, system_prompt, user_prompt, stdout_text, stderr_text, error_out, true) &&
-        !run_llama_process(
-            llama_exe, llama_model, frontend, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false)) {
-        return false;
+    std::string resident_reason;
+    if (start_resident_backend_if_needed(llama_model, resident_reason)) {
+        if (request_resident_correction(raw_trimmed, corrected_text, error_out, debug_stdout)) {
+            backend_used = "resident";
+            std::cerr << "[LLM_BACKEND] resident\n";
+        } else {
+            std::cerr << "[LLM_RESIDENT_FALLBACK] " << error_out << "\n";
+        }
+    } else if (!resident_reason.empty()) {
+        std::cerr << "[LLM_RESIDENT_FALLBACK] " << resident_reason << "\n";
     }
 
-    corrected_text = sanitize_llama_stdout(stdout_text, raw_trimmed);
-    debug_stdout = compact_debug_excerpt(stdout_text);
+    if (corrected_text.empty()) {
+        const std::string system_prompt = build_system_prompt();
+        const std::string user_prompt = build_user_prompt(raw_trimmed);
+        const LlamaFrontend frontend = detect_llama_frontend(llama_exe);
+        if (!run_llama_process(
+                llama_exe, llama_model, frontend, system_prompt, user_prompt, stdout_text, stderr_text, error_out, true) &&
+            !run_llama_process(
+                llama_exe, llama_model, frontend, system_prompt, user_prompt, stdout_text, stderr_text, error_out, false)) {
+            return false;
+        }
+        corrected_text = sanitize_llama_stdout(stdout_text, raw_trimmed);
+        debug_stdout = compact_debug_excerpt(stdout_text);
+        backend_used = "oneshot_fallback";
+        std::cerr << "[LLM_BACKEND] oneshot_fallback\n";
+    }
 
     if (corrected_text.empty() || looks_like_meta_output(corrected_text)) {
         error_out = "Correction output was empty or unusable after sanitization.";
@@ -833,6 +1297,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     if (info_out) {
         *info_out = {};
         info_out->correction_mode = normalized_correction_mode();
+        info_out->backend_used = "none";
         info_out->max_output_tokens = get_correction_max_output_tokens();
     }
 
@@ -864,10 +1329,12 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
 
     if (!segmented) {
         std::string debug_stdout;
-        if (!run_single_correction(llama_exe, llama_model, raw_trimmed, corrected_text, debug_stdout, error_out)) {
+        std::string backend_used;
+        if (!run_single_correction(llama_exe, llama_model, raw_trimmed, corrected_text, debug_stdout, error_out, backend_used)) {
             return false;
         }
         if (info_out) {
+            info_out->backend_used = backend_used;
             info_out->raw_stdout = debug_stdout;
             info_out->clean_output = corrected_text;
             info_out->segment_count = 1;
@@ -893,13 +1360,20 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     corrected_segments.reserve(segments.size());
     std::vector<int> failed;
     std::string raw_stdout_debug;
+    std::string backend_used = "none";
 
     for (std::size_t i = 0; i < segments.size(); ++i) {
         std::string seg_corrected;
         std::string seg_stdout;
         std::string seg_error;
-        if (run_single_correction(llama_exe, llama_model, segments[i], seg_corrected, seg_stdout, seg_error)) {
+        std::string seg_backend;
+        if (run_single_correction(llama_exe, llama_model, segments[i], seg_corrected, seg_stdout, seg_error, seg_backend)) {
             corrected_segments.push_back(seg_corrected);
+            if (backend_used == "none") {
+                backend_used = seg_backend;
+            } else if (!seg_backend.empty() && seg_backend != backend_used) {
+                backend_used = "mixed";
+            }
         } else {
             corrected_segments.push_back(segments[i]);
             failed.push_back(static_cast<int>(i));
@@ -918,6 +1392,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     }
 
     if (info_out) {
+        info_out->backend_used = backend_used;
         info_out->raw_stdout = compact_debug_excerpt(raw_stdout_debug, 500);
         info_out->clean_output = corrected_text;
         info_out->segment_count = static_cast<int>(segments.size());
@@ -955,6 +1430,7 @@ int run_llm_test_command(const std::string& input_text) {
     std::cout << "[LLM_TEST_MODEL] " << info.llama_model.string() << "\n";
     std::cout << "[LLM_TEST_EXE] " << info.llama_exe.string() << "\n";
     std::cout << "[LLM_TEST_MODE] " << normalized_correction_mode() << "\n";
+    std::cout << "[LLM_TEST_BACKEND] " << info.backend_used << "\n";
     std::cout << "[LLM_TEST_SEGMENTED] " << (info.segmented ? "true" : "false") << "\n";
     std::cout << "[LLM_TEST_SEGMENT_COUNT] " << info.segment_count << "\n";
     std::cout << "[LLM_TEST_MAX_OUTPUT_TOKENS] " << info.max_output_tokens << "\n";
@@ -973,4 +1449,26 @@ int run_llm_test_command(const std::string& input_text) {
     std::cout << "[LLM_TEST_OUTPUT] " << corrected << "\n";
     std::cout << "[LLM_TEST_ERROR] " << error << "\n";
     return 0;
+}
+
+void shutdown_llm_correction_backend() {
+#ifdef _WIN32
+    auto& state = resident_state();
+    std::lock_guard<std::mutex> guard(state.mutex);
+    if (!state.process_running) {
+        return;
+    }
+    if (state.process.hProcess) {
+        TerminateProcess(state.process.hProcess, 0);
+        WaitForSingleObject(state.process.hProcess, 2000);
+        CloseHandle(state.process.hProcess);
+        state.process.hProcess = nullptr;
+    }
+    if (state.process.hThread) {
+        CloseHandle(state.process.hThread);
+        state.process.hThread = nullptr;
+    }
+    state.process_running = false;
+    state.ready = false;
+#endif
 }

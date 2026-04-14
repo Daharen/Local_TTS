@@ -31,27 +31,32 @@ void print_usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    const auto finalize = [](int code) {
+        shutdown_llm_correction_backend();
+        return code;
+    };
+
     if (argc == 1) {
         std::cout << describe_paths_json() << '\n';
-        return 0;
+        return finalize(0);
     }
 
     if (argc == 3 && std::string(argv[1]) == "transcribe") {
-        return run_whisper_file_transcription(argv[2]);
+        return finalize(run_whisper_file_transcription(argv[2]));
     }
 
     if (argc == 2 && std::string(argv[1]) == "live") {
-        return run_live_mode(false);
+        return finalize(run_live_mode(false));
     }
 
     if (argc == 2 && std::string(argv[1]) == "live-debug") {
-        return run_live_mode(true);
+        return finalize(run_live_mode(true));
     }
 
     if (argc >= 3 && std::string(argv[1]) == "llm-test") {
-        return run_llm_test_command(join_args(argc, argv, 2));
+        return finalize(run_llm_test_command(join_args(argc, argv, 2)));
     }
 
     print_usage();
-    return 1;
+    return finalize(1);
 }
