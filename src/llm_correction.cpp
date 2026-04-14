@@ -697,6 +697,35 @@ bool read_handle_all(HANDLE handle, std::string& out) {
     return last == ERROR_BROKEN_PIPE || last == ERROR_SUCCESS;
 }
 
+
+
+void close_handle_safe(HANDLE& handle) {
+    if (handle && handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle);
+        handle = nullptr;
+    }
+}
+
+std::string read_pipe_peek_excerpt(HANDLE read_handle, std::size_t max_bytes) {
+    if (!read_handle || max_bytes == 0) {
+        return {};
+    }
+    DWORD available = 0;
+    if (!PeekNamedPipe(read_handle, nullptr, 0, nullptr, &available, nullptr) || available == 0) {
+        return {};
+    }
+    const DWORD to_read = static_cast<DWORD>((std::min<std::size_t>)(max_bytes, static_cast<std::size_t>(available)));
+    if (to_read == 0) {
+        return {};
+    }
+    std::string out(static_cast<std::size_t>(to_read), '\0');
+    DWORD bytes_read = 0;
+    if (!ReadFile(read_handle, out.data(), to_read, &bytes_read, nullptr) || bytes_read == 0) {
+        return {};
+    }
+    out.resize(static_cast<std::size_t>(bytes_read));
+    return out;
+}
 std::string json_escape(const std::string& input) {
     std::string out;
     out.reserve(input.size() + 16);
@@ -836,6 +865,8 @@ struct ResidentBackendState {
     std::string startup_probe_response_excerpt;
     int startup_http_status = 0;
     PROCESS_INFORMATION process{};
+    HANDLE stdout_read = nullptr;
+    HANDLE stderr_read = nullptr;
     bool process_running = false;
 };
 
@@ -891,6 +922,8 @@ void reset_resident_backend_state(const std::string& reason, bool log_marker) {
         CloseHandle(state.process.hThread);
         state.process.hThread = nullptr;
     }
+    close_handle_safe(state.stdout_read);
+    close_handle_safe(state.stderr_read);
     state.process_running = false;
     state.ready = false;
     state.startup_attempted = false;
@@ -1253,6 +1286,7 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
         }
         return true;
     }
+
     state.startup_attempted = true;
     state.startup_error.clear();
     state.ready = false;
@@ -1260,18 +1294,38 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
     state.startup_probe_used.clear();
     state.startup_probe_response_excerpt.clear();
     state.startup_args_excerpt.clear();
-    state.server_exe = find_llama_server_executable_path(get_llama_cpp_root());
+
+    log_resident_marker("LLM_RESIDENT_EXE_RESOLVE_BEGIN", "llama_cpp_root=" + compact_debug_excerpt(get_llama_cpp_root().string(), 200));
+    const std::filesystem::path resolved_exe = find_llama_server_executable_path(get_llama_cpp_root());
+    const bool exe_exists = !resolved_exe.empty() && std::filesystem::exists(resolved_exe);
+    std::uintmax_t exe_size = 0;
+    if (exe_exists) {
+        std::error_code size_ec;
+        exe_size = std::filesystem::file_size(resolved_exe, size_ec);
+        if (size_ec) {
+            exe_size = 0;
+        }
+    }
+    state.server_exe = resolved_exe;
     startup.server_exe = state.server_exe.string();
-    if (state.server_exe.empty()) {
+    log_resident_marker("LLM_RESIDENT_EXE_RESOLVE_END",
+                        "path=" + compact_debug_excerpt(state.server_exe.string(), 240) +
+                            " exists=" + std::string(exe_exists ? "true" : "false") +
+                            " file_size=" + std::to_string(exe_size) +
+                            " source=" + std::string("candidate_discovery") +
+                            " explicit_configured=false" +
+                            " cwd=" + compact_debug_excerpt(get_repo_root().string(), 200));
+    if (!exe_exists) {
         state.startup_error = "llama server executable not found under configured llama_cpp_root";
-        state.startup_attempted = false;
         startup.startup_error = state.startup_error;
         if (ctx) {
             ctx->phase = "startup_failed";
             ctx->last_error = state.startup_error;
         }
+        log_resident_marker("LLM_RESIDENT_START_FAIL", "reason=exe_not_found", true);
         log_resident_marker("LLM_RESIDENT_START_END",
-                            "ok=false endpoint=none timeout_ms=0 remaining_budget_ms=" + std::to_string(budget_remaining_ms) +
+                            "ok=false endpoint=none timeout_ms=" + std::to_string(startup_timeout_ms) +
+                                " remaining_budget_ms=" + std::to_string(budget_remaining_ms) +
                                 " err=" + compact_debug_excerpt(state.startup_error, 180),
                             true);
         return false;
@@ -1279,14 +1333,7 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
 
     std::string help_text;
     std::string help_err;
-    if (!run_process_capture_output(state.server_exe, {L"--help"}, help_text, help_err)) {
-        help_text.clear();
-    }
-    log_resident_marker("LLM_RESIDENT_START_BEGIN",
-                        "endpoint=process timeout_ms=" + std::to_string(startup_timeout_ms) +
-                            " remaining_budget_ms=" + std::to_string(budget_remaining_ms) + " host=" +
-                            get_correction_resident_host() + " port=" + std::to_string(get_correction_resident_port()) +
-                            " server_exe=" + compact_debug_excerpt(state.server_exe.string(), 160));
+    run_process_capture_output(state.server_exe, {L"--help"}, help_text, help_err);
 
     std::vector<std::wstring> args = {state.server_exe.wstring(), L"-m", llama_model.wstring()};
     const std::wstring host_w = utf8_to_wide(get_correction_resident_host());
@@ -1335,22 +1382,74 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
     if (process_supports_flag(help_text, "--jinja")) {
         args.push_back(L"--jinja");
     }
+
     state.startup_args_excerpt = join_args_excerpt(args);
     startup.args_excerpt = state.startup_args_excerpt;
-    log_resident_marker("LLM_RESIDENT_START_ARGS", compact_debug_excerpt(state.startup_args_excerpt, 500));
+    log_resident_marker("LLM_RESIDENT_COMMANDLINE",
+                        "exe=" + compact_debug_excerpt(state.server_exe.string(), 160) +
+                            " host=" + compact_debug_excerpt(get_correction_resident_host(), 80) +
+                            " port=" + std::to_string(port) +
+                            " model=" + compact_debug_excerpt(llama_model.string(), 160) +
+                            " ctx_size=" + std::to_string(get_correction_resident_ctx_size()) +
+                            " gpu_layers=" + std::to_string(get_correction_resident_gpu_layers()) +
+                            " threads=" + std::to_string(get_correction_resident_threads()) +
+                            " flags=" + compact_debug_excerpt(state.startup_args_excerpt, 500));
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE stdout_read = nullptr;
+    HANDLE stdout_write = nullptr;
+    HANDLE stderr_read = nullptr;
+    HANDLE stderr_write = nullptr;
+
+    log_resident_marker("LLM_RESIDENT_PIPE_CREATE_BEGIN", "stdout=pipe stderr=pipe");
+    const bool stdout_ok = CreatePipe(&stdout_read, &stdout_write, &sa, 0) && SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+    const bool stderr_ok = CreatePipe(&stderr_read, &stderr_write, &sa, 0) && SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+    if (!stdout_ok || !stderr_ok) {
+        close_handle_safe(stdout_read);
+        close_handle_safe(stdout_write);
+        close_handle_safe(stderr_read);
+        close_handle_safe(stderr_write);
+        state.startup_error = "failed to create resident startup pipes";
+        startup.startup_error = state.startup_error;
+        log_resident_marker("LLM_RESIDENT_PIPE_CREATE_END", "ok=false", true);
+        log_resident_marker("LLM_RESIDENT_START_FAIL", "reason=pipe_create_failed", true);
+        log_resident_marker("LLM_RESIDENT_START_END",
+                            "ok=false endpoint=process timeout_ms=" + std::to_string(startup_timeout_ms) +
+                                " remaining_budget_ms=" + std::to_string(budget_remaining_ms) +
+                                " err=" + compact_debug_excerpt(state.startup_error, 180),
+                            true);
+        return false;
+    }
+    log_resident_marker("LLM_RESIDENT_PIPE_CREATE_END", "ok=true");
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = stdout_write;
+    si.hStdError = stderr_write;
+
     PROCESS_INFORMATION pi{};
     std::wstring command = build_command_line(args);
     std::vector<wchar_t> cmdline(command.begin(), command.end());
     cmdline.push_back(L'\0');
 
-    const BOOL started = CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    log_resident_marker("LLM_RESIDENT_PROCESS_CREATE_BEGIN", "create_no_window=true inherit_handles=true");
+    const BOOL started = CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    const DWORD create_error = started ? 0 : GetLastError();
+    close_handle_safe(stdout_write);
+    close_handle_safe(stderr_write);
     if (!started) {
+        close_handle_safe(stdout_read);
+        close_handle_safe(stderr_read);
         state.startup_error = "failed to start resident llama server process";
-        state.startup_attempted = false;
         startup.startup_error = state.startup_error;
+        log_resident_marker("LLM_RESIDENT_PROCESS_CREATE_END",
+                            "ok=false get_last_error=" + std::to_string(static_cast<unsigned long>(create_error)),
+                            true);
+        log_resident_marker("LLM_RESIDENT_START_FAIL", "reason=process_create_failed", true);
         log_resident_marker("LLM_RESIDENT_START_END",
                             "ok=false endpoint=process timeout_ms=" + std::to_string(startup_timeout_ms) +
                                 " remaining_budget_ms=" + std::to_string(budget_remaining_ms) +
@@ -1359,27 +1458,98 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
         return false;
     }
 
+    log_resident_marker("LLM_RESIDENT_PROCESS_CREATE_END", "ok=true get_last_error=0");
     state.process = pi;
     state.process_running = true;
     state.llama_model = llama_model;
-
+    state.stdout_read = stdout_read;
+    state.stderr_read = stderr_read;
     startup.started = true;
+
+    log_resident_marker("LLM_RESIDENT_PROCESS_IDS",
+                        "pid=" + std::to_string(static_cast<unsigned long>(pi.dwProcessId)) +
+                            " tid=" + std::to_string(static_cast<unsigned long>(pi.dwThreadId)));
+
+    log_resident_marker("LLM_RESIDENT_PROCESS_WAIT_BEGIN", "phase=post_launch wait_ms=0");
+    const DWORD wait_post_launch = WaitForSingleObject(state.process.hProcess, 0);
+    log_resident_marker("LLM_RESIDENT_PROCESS_WAIT_END", "wait_result=" + std::to_string(static_cast<unsigned long>(wait_post_launch)));
+
+    std::string stdout_snippet;
+    std::string stderr_snippet;
+    log_resident_marker("LLM_RESIDENT_STDOUT_PEEK_BEGIN", "max_bytes=768");
+    stdout_snippet = read_pipe_peek_excerpt(state.stdout_read, 768);
+    log_resident_marker("LLM_RESIDENT_STDOUT_PEEK_END", "bytes=" + std::to_string(stdout_snippet.size()));
+    if (!stdout_snippet.empty()) {
+        log_resident_marker("LLM_RESIDENT_STDOUT_SNIPPET", compact_debug_excerpt(stdout_snippet, 500));
+    }
+
+    log_resident_marker("LLM_RESIDENT_STDERR_PEEK_BEGIN", "max_bytes=768");
+    stderr_snippet = read_pipe_peek_excerpt(state.stderr_read, 768);
+    log_resident_marker("LLM_RESIDENT_STDERR_PEEK_END", "bytes=" + std::to_string(stderr_snippet.size()));
+    if (!stderr_snippet.empty()) {
+        log_resident_marker("LLM_RESIDENT_STDERR_SNIPPET", compact_debug_excerpt(stderr_snippet, 500));
+    }
+
+    if (wait_post_launch == WAIT_OBJECT_0) {
+        DWORD exit_code = 1;
+        GetExitCodeProcess(state.process.hProcess, &exit_code);
+        state.startup_error = "resident server exited during startup (exit=" + std::to_string(static_cast<int>(exit_code)) + ")";
+        startup.startup_error = state.startup_error;
+        log_resident_marker("LLM_RESIDENT_EARLY_EXIT",
+                            "exit_code=" + std::to_string(static_cast<unsigned long>(exit_code)) +
+                                " stdout=" + compact_debug_excerpt(stdout_snippet, 240) +
+                                " stderr=" + compact_debug_excerpt(stderr_snippet, 240),
+                            true);
+        log_resident_marker("LLM_RESIDENT_START_FAIL", "reason=early_exit", true);
+        log_resident_marker("LLM_RESIDENT_RESET", "reason=" + compact_debug_excerpt(state.startup_error, 200));
+        if (state.process.hProcess) {
+            TerminateProcess(state.process.hProcess, 1);
+            WaitForSingleObject(state.process.hProcess, 1500);
+        }
+        close_handle_safe(state.stdout_read);
+        close_handle_safe(state.stderr_read);
+        if (state.process.hThread) {
+            CloseHandle(state.process.hThread);
+            state.process.hThread = nullptr;
+        }
+        if (state.process.hProcess) {
+            CloseHandle(state.process.hProcess);
+            state.process.hProcess = nullptr;
+        }
+        state.process_running = false;
+        state.ready = false;
+        if (ctx) {
+            ctx->phase = "startup_failed";
+            ctx->last_error = state.startup_error;
+        }
+        log_resident_marker("LLM_RESIDENT_START_END",
+                            "ok=false endpoint=process timeout_ms=" + std::to_string(startup_timeout_ms) +
+                                " remaining_budget_ms=" + std::to_string(budget_remaining_ms) +
+                                " err=" + compact_debug_excerpt(state.startup_error, 180),
+                            true);
+        return false;
+    }
+
+    log_resident_marker("LLM_RESIDENT_READY_CHECK_BEGIN",
+                        "host=" + get_correction_resident_host() + " port=" + std::to_string(get_correction_resident_port()) +
+                            " timeout_ms=" + std::to_string(startup_timeout_ms));
     log_resident_marker("LLM_RESIDENT_PROBE_BEGIN",
                         "endpoint=health timeout_ms=" + std::to_string(startup_timeout_ms) + " remaining_budget_ms=" +
                             std::to_string(budget_remaining_ms));
+
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(startup_timeout_ms);
+    bool ready_ok = false;
     while (std::chrono::steady_clock::now() < deadline) {
         DWORD exit_code = STILL_ACTIVE;
         if (GetExitCodeProcess(state.process.hProcess, &exit_code) && exit_code != STILL_ACTIVE) {
             state.process_running = false;
             state.startup_error = "resident server exited during startup (exit=" + std::to_string(static_cast<int>(exit_code)) + ")";
             startup.startup_error = state.startup_error;
-            if (ctx) {
-                ctx->phase = "startup_failed";
-                ctx->last_error = state.startup_error;
-            }
+            log_resident_marker("LLM_RESIDENT_EARLY_EXIT", "exit_code=" + std::to_string(static_cast<unsigned long>(exit_code)), true);
+            log_resident_marker("LLM_RESIDENT_START_FAIL", "reason=early_exit", true);
             break;
         }
+
         std::string probe_used;
         std::string probe_excerpt;
         int probe_status = 0;
@@ -1400,6 +1570,8 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
             log_resident_marker("LLM_RESIDENT_PROBE_END",
                                 "ok=true endpoint=" + probe_used + " status=" + std::to_string(probe_status) +
                                     " remaining_budget_ms=" + std::to_string(budget_remaining_ms));
+            log_resident_marker("LLM_RESIDENT_READY_CHECK_END",
+                                "ok=true endpoint=" + probe_used + " status=" + std::to_string(probe_status));
             log_resident_marker("LLM_RESIDENT_START_END",
                                 "ok=true endpoint=" + probe_used + " timeout_ms=" + std::to_string(startup_timeout_ms) +
                                     " remaining_budget_ms=" + std::to_string(budget_remaining_ms));
@@ -1408,28 +1580,52 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
                 ctx->last_endpoint = probe_used;
                 ctx->last_status = probe_status;
             }
-            return true;
+            ready_ok = true;
+            break;
         }
+
+        log_resident_marker("LLM_RESIDENT_STDOUT_PEEK_BEGIN", "max_bytes=256");
+        const std::string more_stdout = read_pipe_peek_excerpt(state.stdout_read, 256);
+        log_resident_marker("LLM_RESIDENT_STDOUT_PEEK_END", "bytes=" + std::to_string(more_stdout.size()));
+        if (!more_stdout.empty()) {
+            log_resident_marker("LLM_RESIDENT_STDOUT_SNIPPET", compact_debug_excerpt(more_stdout, 300));
+        }
+        log_resident_marker("LLM_RESIDENT_STDERR_PEEK_BEGIN", "max_bytes=256");
+        const std::string more_stderr = read_pipe_peek_excerpt(state.stderr_read, 256);
+        log_resident_marker("LLM_RESIDENT_STDERR_PEEK_END", "bytes=" + std::to_string(more_stderr.size()));
+        if (!more_stderr.empty()) {
+            log_resident_marker("LLM_RESIDENT_STDERR_SNIPPET", compact_debug_excerpt(more_stderr, 300));
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(120));
     }
 
-    if (!state.ready) {
-        state.startup_error = state.startup_error.empty() ? "resident server startup timed out" : state.startup_error;
-        state.startup_attempted = false;
+    if (!ready_ok) {
+        const bool timed_out = state.startup_error.empty();
+        if (timed_out) {
+            state.startup_error = "resident server startup timed out";
+            log_resident_marker("LLM_RESIDENT_START_FAIL", "reason=start_timeout", true);
+        }
         startup.startup_error = state.startup_error;
         log_resident_marker("LLM_RESIDENT_PROBE_END",
                             "ok=false endpoint=health status=0 remaining_budget_ms=" + std::to_string(budget_remaining_ms) +
                                 " err=" + compact_debug_excerpt(state.startup_error, 180),
+                            true);
+        log_resident_marker("LLM_RESIDENT_READY_CHECK_END",
+                            "ok=false err=" + compact_debug_excerpt(state.startup_error, 180),
                             true);
         log_resident_marker("LLM_RESIDENT_START_END",
                             "ok=false endpoint=none timeout_ms=" + std::to_string(startup_timeout_ms) +
                                 " remaining_budget_ms=" + std::to_string(budget_remaining_ms) +
                                 " err=" + compact_debug_excerpt(state.startup_error, 180),
                             true);
-        if (state.process_running) {
+        log_resident_marker("LLM_RESIDENT_RESET", "reason=" + compact_debug_excerpt(state.startup_error, 200));
+        if (state.process.hProcess) {
             TerminateProcess(state.process.hProcess, 1);
-            state.process_running = false;
+            WaitForSingleObject(state.process.hProcess, 1500);
         }
+        close_handle_safe(state.stdout_read);
+        close_handle_safe(state.stderr_read);
         if (state.process.hThread) {
             CloseHandle(state.process.hThread);
             state.process.hThread = nullptr;
@@ -1438,14 +1634,18 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
             CloseHandle(state.process.hProcess);
             state.process.hProcess = nullptr;
         }
+        state.process_running = false;
+        state.ready = false;
         if (ctx) {
             ctx->phase = "startup_failed";
             ctx->last_error = state.startup_error;
         }
         return false;
     }
+
     return true;
 }
+
 
 bool request_resident_correction(const std::string& raw_trimmed,
                                  std::string& corrected_text,
