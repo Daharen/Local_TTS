@@ -74,6 +74,11 @@ struct PipelineSnapshot {
     int64_t from_recording_stop_to_paste_ms = -1;
     int64_t total_end_to_end_duration_ms = -1;
     bool correction_applied = false;
+    std::string correction_backend;
+    std::string correction_error;
+    std::string correction_sanitizer_reason;
+    std::string correction_raw_stdout_excerpt;
+    std::string correction_raw_stderr_excerpt;
     bool segmented = false;
     int segment_count = 0;
     PasteOutcome paste_outcome = PasteOutcome::Unknown;
@@ -112,6 +117,12 @@ void diag_end(uint64_t session_id,
               bool success = false) noexcept;
 
 void set_correction_applied(uint64_t session_id, bool applied) noexcept;
+void set_correction_debug(uint64_t session_id,
+                          const std::string& backend,
+                          const std::string& error,
+                          const std::string& sanitizer_reason,
+                          const std::string& raw_stdout_excerpt,
+                          const std::string& raw_stderr_excerpt) noexcept;
 void set_segmentation(uint64_t session_id, bool segmented, int segment_count) noexcept;
 void set_paste_outcome(uint64_t session_id, PasteOutcome outcome) noexcept;
 void set_recording_stop_time(uint64_t session_id) noexcept;
@@ -136,6 +147,12 @@ inline void diag_point(uint64_t, DiagnosticStage, const std::string& = std::stri
 inline void diag_begin(uint64_t, DiagnosticStage, const std::string& = std::string()) noexcept {}
 inline void diag_end(uint64_t, DiagnosticStage, const std::string& = std::string(), bool = false, bool = false) noexcept {}
 inline void set_correction_applied(uint64_t, bool) noexcept {}
+inline void set_correction_debug(uint64_t,
+                                 const std::string&,
+                                 const std::string&,
+                                 const std::string&,
+                                 const std::string&,
+                                 const std::string&) noexcept {}
 inline void set_segmentation(uint64_t, bool, int) noexcept {}
 inline void set_paste_outcome(uint64_t, PasteOutcome) noexcept {}
 inline void set_recording_stop_time(uint64_t) noexcept {}

@@ -156,6 +156,21 @@ public:
         update_session(session_id, [applied](SessionWork& s) { s.snapshot.correction_applied = applied; });
     }
 
+    void set_correction_debug(uint64_t session_id,
+                              const std::string& backend,
+                              const std::string& error,
+                              const std::string& sanitizer_reason,
+                              const std::string& raw_stdout_excerpt,
+                              const std::string& raw_stderr_excerpt) noexcept {
+        update_session(session_id, [&](SessionWork& s) {
+            s.snapshot.correction_backend = backend;
+            s.snapshot.correction_error = error;
+            s.snapshot.correction_sanitizer_reason = sanitizer_reason;
+            s.snapshot.correction_raw_stdout_excerpt = raw_stdout_excerpt;
+            s.snapshot.correction_raw_stderr_excerpt = raw_stderr_excerpt;
+        });
+    }
+
     void set_segmentation(uint64_t session_id, bool segmented, int segment_count) noexcept {
         update_session(session_id, [segmented, segment_count](SessionWork& s) {
             s.snapshot.segmented = segmented;
@@ -364,6 +379,15 @@ void diag_end(uint64_t session_id,
 
 void set_correction_applied(uint64_t session_id, bool applied) noexcept {
     store().set_correction_applied(session_id, applied);
+}
+
+void set_correction_debug(uint64_t session_id,
+                          const std::string& backend,
+                          const std::string& error,
+                          const std::string& sanitizer_reason,
+                          const std::string& raw_stdout_excerpt,
+                          const std::string& raw_stderr_excerpt) noexcept {
+    store().set_correction_debug(session_id, backend, error, sanitizer_reason, raw_stdout_excerpt, raw_stderr_excerpt);
 }
 
 void set_segmentation(uint64_t session_id, bool segmented, int segment_count) noexcept {

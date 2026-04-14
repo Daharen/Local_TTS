@@ -3,10 +3,10 @@
 Local-first C++ transcription for Windows using external `whisper.cpp` and optional external `llama.cpp`.
 
 ## LLM correction backend
-- Correction now prefers a resident local `llama.cpp` server backend to avoid per-request model/process startup.
+- Correction now defaults to one-shot `llama.cpp` execution for current stability while sanitizer/output diagnostics are improved.
 - `llama.cpp` and GGUF model paths remain external/config-driven (`llama_cpp_root`, `llama_model_path`); the repo does not store model files.
-- Resident mode is enabled by default and attempts GPU offload (`correction_resident_gpu_layers`) so the model can remain loaded between corrections.
-- If resident startup or request handling fails, correction falls back to one-shot subprocess behavior automatically.
+- Resident mode remains available through config (`correction_backend_mode: "resident"` or `"auto"`) and uses the existing resident tuning fields.
+- Correction diagnostics now surface backend used, sanitizer reason, and bounded raw stdout/stderr excerpts to help debug extraction failures.
 - Resident/backend tuning is controlled through runtime config fields:
   - `correction_backend_mode`
   - `correction_resident_enabled`
