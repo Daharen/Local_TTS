@@ -2,6 +2,22 @@
 
 Local-first C++ transcription for Windows using external `whisper.cpp` and optional external `llama.cpp`.
 
+## LLM correction backend
+- Correction now prefers a resident local `llama.cpp` server backend to avoid per-request model/process startup.
+- `llama.cpp` and GGUF model paths remain external/config-driven (`llama_cpp_root`, `llama_model_path`); the repo does not store model files.
+- Resident mode is enabled by default and attempts GPU offload (`correction_resident_gpu_layers`) so the model can remain loaded between corrections.
+- If resident startup or request handling fails, correction falls back to one-shot subprocess behavior automatically.
+- Resident/backend tuning is controlled through runtime config fields:
+  - `correction_backend_mode`
+  - `correction_resident_enabled`
+  - `correction_resident_host`
+  - `correction_resident_port`
+  - `correction_resident_ctx_size`
+  - `correction_resident_gpu_layers`
+  - `correction_resident_threads`
+  - `correction_resident_startup_timeout_ms`
+  - `correction_resident_request_timeout_ms`
+
 ## Commands
 - `./run.ps1`
 - `./run.ps1 transcribe <path-to-audio.wav>`
