@@ -4,6 +4,7 @@
   "whisper_model_path": "F:\\Local_TTS_Large_Data\\models\\whisper.cpp\\ggml-base.en.bin",
   "llama_cpp_root": "F:\\Qwen3.5-27B\\llama.cpp",
   "llama_model_path": "F:\\Qwen3.5-27B\\small-model-3b\\Qwen2.5-3B-Instruct-IQ4_XS.gguf",
+  "pipeline_debug_enabled": false,
   "correction_enabled": true,
   "correction_temperature": 0.0,
   "correction_top_k": 1,

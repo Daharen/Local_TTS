@@ -16,6 +16,7 @@ set(LOCAL_TTS_SOURCES
     src/audio_capture.cpp
     src/text_injection.cpp
     src/llm_correction.cpp
+    src/pipeline_debug.cpp
 )
 
 if(LOCAL_TTS_ENABLE_DASHBOARD)

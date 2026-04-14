@@ -151,6 +151,11 @@ void apply_config_json(AppConfig& config, const std::string& json) {
         config.llama_model_path = llama_model_path;
     }
 
+    const auto pipeline_debug_enabled = find_json_value_token(json, "pipeline_debug_enabled");
+    if (!pipeline_debug_enabled.empty()) {
+        config.pipeline_debug_enabled = parse_bool_value(pipeline_debug_enabled, config.pipeline_debug_enabled);
+    }
+
     const auto correction_enabled = find_json_value_token(json, "correction_enabled");
     if (!correction_enabled.empty()) {
         config.correction_enabled = parse_bool_value(correction_enabled, config.correction_enabled);
@@ -280,6 +285,9 @@ void apply_environment_overrides(AppConfig& config) {
             config.llama_model_path = value;
         }
     }
+    if (const char* env = std::getenv("LOCAL_TTS_PIPELINE_DEBUG_ENABLED")) {
+        config.pipeline_debug_enabled = parse_bool_value(trim_copy(env), config.pipeline_debug_enabled);
+    }
     if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_ENABLED")) {
         config.correction_enabled = parse_bool_value(trim_copy(env), config.correction_enabled);
     }
@@ -359,6 +367,7 @@ AppConfig make_default_config() {
     config.whisper_model_path = large_data_root / "models" / "whisper.cpp" / "ggml-base.en.bin";
     config.llama_cpp_root = R"(F:\Qwen3.5-27B\llama.cpp)";
     config.llama_model_path = R"(F:\Qwen3.5-27B\small-model-3b\Qwen2.5-3B-Instruct-IQ4_XS.gguf)";
+    config.pipeline_debug_enabled = false;
 
     config.correction_enabled = true;
     config.correction_temperature = 0.0;

@@ -4,6 +4,7 @@
 #include "dashboard.h"
 #include "diagnostics.h"
 #include "llm_correction.h"
+#include "pipeline_debug.h"
 #include "paths.h"
 #include "text_injection.h"
 #include "whisper_runner.h"
@@ -134,6 +135,7 @@ private:
     };
 
     void debug_line(const std::string& line, bool as_error = false) const {
+        pipeline_debug::log("live_mode", line, as_error);
         if (!debug_console_) {
             return;
         }

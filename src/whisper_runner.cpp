@@ -1,6 +1,7 @@
 #include "whisper_runner.h"
 
 #include "paths.h"
+#include "pipeline_debug.h"
 
 #include <filesystem>
 #include <iostream>
@@ -98,10 +99,12 @@ bool resolve_transcribe_inputs(
 bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::string& text_out, std::string& error_out) {
     text_out.clear();
     error_out.clear();
+    pipeline_debug::log("whisper", "transcription requested for: " + audio_path.string());
 
     std::filesystem::path whisper_cli;
     std::filesystem::path model_path;
     if (!resolve_transcribe_inputs(audio_path, whisper_cli, model_path, error_out)) {
+        pipeline_debug::log("whisper", error_out, true);
         return false;
     }
 
@@ -157,6 +160,7 @@ bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::str
         CloseHandle(stdout_read);
         CloseHandle(stderr_read);
         error_out = "Failed to launch whisper-cli.exe.";
+        pipeline_debug::log("whisper", error_out, true);
         return false;
     }
 
@@ -175,6 +179,11 @@ bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::str
 
     text_out = trim_copy(text_out);
     error_out = trim_copy(error_out);
+    if (exit_code == 0) {
+        pipeline_debug::log("whisper", "transcription completed successfully");
+    } else {
+        pipeline_debug::log("whisper", error_out.empty() ? "whisper-cli exited with non-zero status" : error_out, true);
+    }
     return exit_code == 0;
 #else
     const std::string cmd =
@@ -183,6 +192,7 @@ bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::str
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) {
         error_out = "Failed to launch whisper-cli.";
+        pipeline_debug::log("whisper", error_out, true);
         return false;
     }
 
@@ -195,8 +205,10 @@ bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::str
     text_out = trim_copy(text_out);
     if (rc != 0) {
         error_out = "whisper-cli failed.";
+        pipeline_debug::log("whisper", error_out, true);
         return false;
     }
+    pipeline_debug::log("whisper", "transcription completed successfully");
     return true;
 #endif
 }

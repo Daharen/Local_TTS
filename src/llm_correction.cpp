@@ -1,5 +1,6 @@
 #include "llm_correction.h"
 
+#include "pipeline_debug.h"
 #include "paths.h"
 
 #include <algorithm>
@@ -1575,6 +1576,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
                                        std::string& corrected_text,
                                        std::string& error_out,
                                        CorrectionRunInfo* info_out) {
+    pipeline_debug::log("llm_correction", "correction requested");
     corrected_text.clear();
     error_out.clear();
     if (info_out) {
@@ -1587,6 +1589,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     const std::string raw_trimmed = trim_copy(raw_text);
     if (raw_trimmed.empty()) {
         error_out = "Raw transcript is empty.";
+        pipeline_debug::log("llm_correction", error_out, true);
         return false;
     }
 
@@ -1594,6 +1597,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     std::filesystem::path llama_exe;
     std::filesystem::path llama_model;
     if (!resolve_llama_inputs(llama_exe, llama_model, error_out)) {
+        pipeline_debug::log("llm_correction", error_out, true);
         return false;
     }
     if (info_out) {
@@ -1617,6 +1621,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
             info_out->backend_used = backend_used;
         }
         if (!ok) {
+            pipeline_debug::log("llm_correction", error_out.empty() ? "single correction failed" : error_out, true);
             return false;
         }
         if (info_out) {
@@ -1638,6 +1643,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     const auto segments = build_segments(raw_trimmed, seg_max, seg_overlap);
     if (segments.empty()) {
         error_out = "Failed to build correction segments.";
+        pipeline_debug::log("llm_correction", error_out, true);
         return false;
     }
 
@@ -1723,11 +1729,16 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
             err << ' ' << idx;
         }
         error_out = err.str();
+        pipeline_debug::log("llm_correction", error_out, true);
     }
+
+    pipeline_debug::log("llm_correction", "correction completed using backend=" + backend_used +
+                                             " segmented=" + std::string(segmented ? "true" : "false"));
 
     return true;
 #else
     error_out = "LLM correction is only supported on Windows.";
+    pipeline_debug::log("llm_correction", error_out, true);
     return false;
 #endif
 }

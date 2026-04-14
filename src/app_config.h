@@ -9,6 +9,7 @@ struct AppConfig {
     std::filesystem::path whisper_model_path;
     std::filesystem::path llama_cpp_root;
     std::filesystem::path llama_model_path;
+    bool pipeline_debug_enabled;
 
     bool correction_enabled;
     double correction_temperature;
