@@ -393,7 +393,7 @@ AppConfig make_default_config() {
     config.correction_top_p = 0.0;
     config.correction_min_p = 0.0;
     config.correction_mode = "formatted";
-    config.correction_backend_mode = "resident";
+    config.correction_backend_mode = "oneshot";
     config.correction_resident_enabled = true;
     config.correction_resident_host = "127.0.0.1";
     config.correction_resident_port = 18081;
