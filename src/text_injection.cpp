@@ -1,4 +1,5 @@
 #include "text_injection.h"
+#include "pipeline_debug.h"
 
 #ifdef _WIN32
 
@@ -65,30 +66,36 @@ void release_modifiers() {
 
 bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8_text, std::string& error_out) {
     error_out.clear();
+    pipeline_debug::log("text_injection", "[INJECT_BEGIN] utf8_chars=" + std::to_string(utf8_text.size()));
     const std::wstring wide = utf8_to_wide(utf8_text);
     if (wide.empty()) {
         error_out = "Transcript is empty or UTF-8 conversion failed.";
+        pipeline_debug::log("text_injection", "[INJECT_END] ok=false reason=" + error_out, true);
         return false;
     }
 
     if (!target_window || !IsWindow(target_window) || !IsWindowVisible(target_window)) {
         error_out = "Target window is invalid.";
+        pipeline_debug::log("text_injection", "[INJECT_END] ok=false reason=" + error_out, true);
         return false;
     }
 
     if (GetForegroundWindow() != target_window) {
         error_out = "Target window is not foreground; skipping non-disruptive paste.";
+        pipeline_debug::log("text_injection", "[INJECT_END] ok=false reason=" + error_out, true);
         return false;
     }
 
     if (!OpenClipboard(nullptr)) {
         error_out = "Failed to open clipboard.";
+        pipeline_debug::log("text_injection", "[INJECT_END] ok=false reason=" + error_out, true);
         return false;
     }
 
     if (!EmptyClipboard()) {
         CloseClipboard();
         error_out = "Failed to clear clipboard.";
+        pipeline_debug::log("text_injection", "[INJECT_END] ok=false reason=" + error_out, true);
         return false;
     }
 
@@ -97,6 +104,7 @@ bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8
     if (!mem) {
         CloseClipboard();
         error_out = "Failed to allocate clipboard memory.";
+        pipeline_debug::log("text_injection", "[INJECT_END] ok=false reason=" + error_out, true);
         return false;
     }
 
@@ -108,6 +116,7 @@ bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8
         GlobalFree(mem);
         CloseClipboard();
         error_out = "Failed to set clipboard data.";
+        pipeline_debug::log("text_injection", "[INJECT_END] ok=false reason=" + error_out, true);
         return false;
     }
 
@@ -115,6 +124,8 @@ bool inject_text_via_clipboard_paste(HWND target_window, const std::string& utf8
     release_modifiers();
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     send_ctrl_v();
+    pipeline_debug::log("text_injection",
+                        "[INJECT_END] ok=true utf16_chars=" + std::to_string(wide.size()) + " bytes=" + std::to_string(bytes));
     return true;
 }
 

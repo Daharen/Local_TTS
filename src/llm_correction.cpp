@@ -1266,6 +1266,11 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
     if (!run_process_capture_output(state.server_exe, {L"--help"}, help_text, help_err)) {
         help_text.clear();
     }
+    std::cerr << "[LLM_RESIDENT_START_CONFIG] server_exe=" << compact_debug_excerpt(state.server_exe.string(), 240)
+              << " model=" << compact_debug_excerpt(llama_model.string(), 240)
+              << " host=" << get_correction_resident_host() << " port=" << get_correction_resident_port()
+              << " startup_timeout_ms=" << startup_timeout_ms << " budget_remaining_ms=" << budget_remaining_ms
+              << " help_chars=" << help_text.size() << " help_err_chars=" << help_err.size() << "\n";
 
     std::vector<std::wstring> args = {state.server_exe.wstring(), L"-m", llama_model.wstring()};
     const std::wstring host_w = utf8_to_wide(get_correction_resident_host());
@@ -1316,6 +1321,7 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
     }
     state.startup_args_excerpt = join_args_excerpt(args);
     startup.args_excerpt = state.startup_args_excerpt;
+    std::cerr << "[LLM_RESIDENT_START_ARGS] " << compact_debug_excerpt(state.startup_args_excerpt, 500) << "\n";
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -1439,6 +1445,9 @@ bool request_resident_correction(const std::string& raw_trimmed,
                                         std::to_string(get_correction_top_p()) + ",\"min_p\":" +
                                         std::to_string(get_correction_min_p()) + ",\"n_predict\":" +
                                         std::to_string(get_correction_max_output_tokens()) + ",\"stream\":false}";
+    std::cerr << "[LLM_RESIDENT_INPUT] raw_chars=" << raw_trimmed.size() << " sys_prompt_chars=" << sys_prompt.size()
+              << " user_prompt_chars=" << user_prompt.size() << " chat_body_chars=" << chat_body.size()
+              << " completion_body_chars=" << completion_body.size() << "\n";
 
     struct Attempt {
         std::wstring path;
@@ -1457,7 +1466,7 @@ bool request_resident_correction(const std::string& raw_trimmed,
         endpoint_used_out = std::string(attempt.path.begin(), attempt.path.end());
         ctx.last_endpoint = endpoint_used_out;
         std::cerr << "[LLM_RESIDENT_REQUEST_BEGIN] endpoint=" << endpoint_used_out << " timeout_ms=" << timeout
-                  << " remaining_budget_ms=" << ctx.remaining_budget_ms << "\n";
+                  << " remaining_budget_ms=" << ctx.remaining_budget_ms << " request_body_chars=" << attempt.body->size() << "\n";
         const auto attempt_begin = std::chrono::steady_clock::now();
         const HttpResult result = http_request_json(
             get_correction_resident_host(), get_correction_resident_port(), L"POST", attempt.path, attempt.body, timeout);
