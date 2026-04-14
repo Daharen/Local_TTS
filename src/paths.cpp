@@ -50,6 +50,10 @@ std::filesystem::path get_llama_model_path() {
     return get_app_config().llama_model_path;
 }
 
+bool is_pipeline_debug_enabled() {
+    return get_app_config().pipeline_debug_enabled;
+}
+
 bool is_correction_enabled() {
     return get_app_config().correction_enabled;
 }
@@ -142,6 +146,7 @@ std::string describe_paths_json() {
         << "  \"whisper_model_path\": \"" << escape_json(whisper_model) << "\",\n"
         << "  \"llama_cpp_root\": \"" << escape_json(llama_cpp) << "\",\n"
         << "  \"llama_model_path\": \"" << escape_json(llama_model) << "\",\n"
+        << "  \"pipeline_debug_enabled\": " << (is_pipeline_debug_enabled() ? "true" : "false") << ",\n"
         << "  \"correction_enabled\": " << (is_correction_enabled() ? "true" : "false") << ",\n"
         << "  \"correction_temperature\": " << get_correction_temperature() << ",\n"
         << "  \"correction_top_k\": " << get_correction_top_k() << ",\n"

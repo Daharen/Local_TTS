@@ -38,6 +38,7 @@ Local-first C++ transcription for Windows using external `whisper.cpp` and optio
 - `runtime.local.json` is an optional local override file (same schema, git-ignored).
 - `runtime.local.json.example` mirrors the full schema.
 - Prefer editing config files instead of changing code for runtime tuning.
+- `pipeline_debug_enabled` controls an additional common debug log written to `<large_data_root>/output/debug/pipeline.common.log`.
 
 Resolution order for effective values:
 1. Environment variables

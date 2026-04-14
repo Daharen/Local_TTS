@@ -9,6 +9,7 @@ std::filesystem::path get_whisper_cpp_root();
 std::filesystem::path get_whisper_model_path();
 std::filesystem::path get_llama_cpp_root();
 std::filesystem::path get_llama_model_path();
+bool is_pipeline_debug_enabled();
 bool is_correction_enabled();
 double get_correction_temperature();
 int get_correction_top_k();
