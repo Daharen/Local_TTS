@@ -70,6 +70,18 @@ std::string format_snapshot(const diagnostics::DiagnosticsSnapshot& snapshot) {
     if (session.resident_http_status > 0) {
         out << "resident HTTP status: " << session.resident_http_status << '\n';
     }
+    if (!session.resident_phase.empty()) {
+        out << "resident phase: " << session.resident_phase << '\n';
+    }
+    if (session.resident_remaining_budget_ms > 0) {
+        out << "resident remaining budget: " << session.resident_remaining_budget_ms << " ms\n";
+    }
+    if (session.resident_request_count > 0) {
+        out << "resident request count: " << session.resident_request_count << '\n';
+    }
+    if (!session.resident_last_error.empty()) {
+        out << "resident last error: " << session.resident_last_error << '\n';
+    }
     if (!session.correction_error.empty()) {
         out << "correction error: " << session.correction_error << '\n';
     }

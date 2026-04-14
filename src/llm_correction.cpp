@@ -841,6 +841,18 @@ struct ResidentStartupInfo {
     std::string probe_response_excerpt;
 };
 
+struct ResidentRequestContext {
+    int total_budget_ms = 0;
+    int remaining_budget_ms = 0;
+    int attempt_timeout_ms = 0;
+    int request_count = 0;
+    int last_status = 0;
+    std::string phase;
+    std::string last_endpoint;
+    std::string last_error;
+    std::string reset_reason;
+};
+
 struct HttpResult {
     bool transport_ok = false;
     int status_code = 0;
@@ -851,6 +863,32 @@ struct HttpResult {
 ResidentBackendState& resident_state() {
     static ResidentBackendState state;
     return state;
+}
+
+void reset_resident_backend_state(const std::string& reason, bool log_marker) {
+    auto& state = resident_state();
+    std::lock_guard<std::mutex> guard(state.mutex);
+    if (log_marker) {
+        std::cerr << "[LLM_RESIDENT_RESET] reason=" << compact_debug_excerpt(reason, 200) << "\n";
+    }
+    if (state.process.hProcess) {
+        TerminateProcess(state.process.hProcess, 1);
+        WaitForSingleObject(state.process.hProcess, 1500);
+        CloseHandle(state.process.hProcess);
+        state.process.hProcess = nullptr;
+    }
+    if (state.process.hThread) {
+        CloseHandle(state.process.hThread);
+        state.process.hThread = nullptr;
+    }
+    state.process_running = false;
+    state.ready = false;
+    state.startup_attempted = false;
+    state.startup_error.clear();
+    state.startup_http_status = 0;
+    state.startup_probe_used.clear();
+    state.startup_probe_response_excerpt.clear();
+    state.startup_args_excerpt.clear();
 }
 
 std::filesystem::path find_llama_server_executable_path(const std::filesystem::path& llama_root) {
@@ -1162,7 +1200,11 @@ bool run_llama_process(const std::filesystem::path& exe,
     return true;
 }
 
-bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, ResidentStartupInfo& startup) {
+bool start_resident_backend_if_needed(const std::filesystem::path& llama_model,
+                                      int startup_timeout_ms,
+                                      int budget_remaining_ms,
+                                      ResidentStartupInfo& startup,
+                                      ResidentRequestContext* ctx) {
     startup = {};
     startup.attempted = true;
     if (!is_correction_resident_enabled()) {
@@ -1179,6 +1221,12 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
     auto& state = resident_state();
     std::lock_guard<std::mutex> guard(state.mutex);
     if (state.ready && state.process_running) {
+        std::cerr << "[LLM_RESIDENT_PROBE_BEGIN] endpoint=" << state.startup_probe_used << " timeout_ms=0 remaining_budget_ms="
+                  << budget_remaining_ms << "\n";
+        std::cerr << "[LLM_RESIDENT_PROBE_END] ok=true endpoint=" << state.startup_probe_used << " status=" << state.startup_http_status
+                  << " remaining_budget_ms=" << budget_remaining_ms << "\n";
+        std::cerr << "[LLM_RESIDENT_START_END] ok=true endpoint=" << state.startup_probe_used << " timeout_ms=0 remaining_budget_ms="
+                  << budget_remaining_ms << "\n";
         startup.started = true;
         startup.health_check_ok = true;
         startup.server_exe = state.server_exe.string();
@@ -1186,15 +1234,11 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
         startup.http_status = state.startup_http_status;
         startup.args_excerpt = state.startup_args_excerpt;
         startup.probe_response_excerpt = state.startup_probe_response_excerpt;
+        if (ctx) {
+            ctx->phase = "startup_ready";
+        }
         return true;
     }
-    if (state.startup_attempted && !state.ready) {
-        startup.startup_error = state.startup_error.empty() ? "previous resident startup failed" : state.startup_error;
-        startup.server_exe = state.server_exe.string();
-        startup.args_excerpt = state.startup_args_excerpt;
-        return false;
-    }
-
     state.startup_attempted = true;
     state.startup_error.clear();
     state.ready = false;
@@ -1206,8 +1250,14 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
     startup.server_exe = state.server_exe.string();
     if (state.server_exe.empty()) {
         state.startup_error = "llama server executable not found under configured llama_cpp_root";
+        state.startup_attempted = false;
         startup.startup_error = state.startup_error;
-        std::cerr << "[LLM_RESIDENT_START] failed: " << state.startup_error << "\n";
+        if (ctx) {
+            ctx->phase = "startup_failed";
+            ctx->last_error = state.startup_error;
+        }
+        std::cerr << "[LLM_RESIDENT_START_END] ok=false endpoint=none timeout_ms=0 remaining_budget_ms=" << budget_remaining_ms
+                  << " err=" << compact_debug_excerpt(state.startup_error, 180) << "\n";
         return false;
     }
 
@@ -1277,6 +1327,7 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
     const BOOL started = CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     if (!started) {
         state.startup_error = "failed to start resident llama server process";
+        state.startup_attempted = false;
         startup.startup_error = state.startup_error;
         std::cerr << "[LLM_RESIDENT_START] failed: " << state.startup_error << "\n";
         return false;
@@ -1287,13 +1338,19 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
     state.llama_model = llama_model;
 
     startup.started = true;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(get_correction_resident_startup_timeout_ms());
+    std::cerr << "[LLM_RESIDENT_PROBE_BEGIN] endpoint=health timeout_ms=" << startup_timeout_ms
+              << " remaining_budget_ms=" << budget_remaining_ms << "\n";
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(startup_timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
         DWORD exit_code = STILL_ACTIVE;
         if (GetExitCodeProcess(state.process.hProcess, &exit_code) && exit_code != STILL_ACTIVE) {
             state.process_running = false;
             state.startup_error = "resident server exited during startup (exit=" + std::to_string(static_cast<int>(exit_code)) + ")";
             startup.startup_error = state.startup_error;
+            if (ctx) {
+                ctx->phase = "startup_failed";
+                ctx->last_error = state.startup_error;
+            }
             break;
         }
         std::string probe_used;
@@ -1308,7 +1365,15 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
             startup.endpoint_used = probe_used;
             startup.http_status = probe_status;
             startup.probe_response_excerpt = probe_excerpt;
-            std::cerr << "[LLM_RESIDENT_START] ok\n";
+            std::cerr << "[LLM_RESIDENT_PROBE_END] ok=true endpoint=" << probe_used << " status=" << probe_status
+                      << " remaining_budget_ms=" << budget_remaining_ms << "\n";
+            std::cerr << "[LLM_RESIDENT_START_END] ok=true endpoint=" << probe_used << " timeout_ms=" << startup_timeout_ms
+                      << " remaining_budget_ms=" << budget_remaining_ms << "\n";
+            if (ctx) {
+                ctx->phase = "startup_ready";
+                ctx->last_endpoint = probe_used;
+                ctx->last_status = probe_status;
+            }
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(120));
@@ -1316,8 +1381,13 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
 
     if (!state.ready) {
         state.startup_error = state.startup_error.empty() ? "resident server startup timed out" : state.startup_error;
+        state.startup_attempted = false;
         startup.startup_error = state.startup_error;
-        std::cerr << "[LLM_RESIDENT_START] failed: " << state.startup_error << "\n";
+        std::cerr << "[LLM_RESIDENT_PROBE_END] ok=false endpoint=health status=0 remaining_budget_ms=" << budget_remaining_ms
+                  << " err=" << compact_debug_excerpt(state.startup_error, 180) << "\n";
+        std::cerr << "[LLM_RESIDENT_START_END] ok=false endpoint=none timeout_ms=" << startup_timeout_ms
+                  << " remaining_budget_ms=" << budget_remaining_ms << " err=" << compact_debug_excerpt(state.startup_error, 180)
+                  << "\n";
         if (state.process_running) {
             TerminateProcess(state.process.hProcess, 1);
             state.process_running = false;
@@ -1329,6 +1399,10 @@ bool start_resident_backend_if_needed(const std::filesystem::path& llama_model, 
         if (state.process.hProcess) {
             CloseHandle(state.process.hProcess);
             state.process.hProcess = nullptr;
+        }
+        if (ctx) {
+            ctx->phase = "startup_failed";
+            ctx->last_error = state.startup_error;
         }
         return false;
     }
@@ -1344,7 +1418,8 @@ bool request_resident_correction(const std::string& raw_trimmed,
                                  std::string& endpoint_used_out,
                                  int& http_status_out,
                                  bool& request_sent_out,
-                                 std::string& resident_error_out) {
+                                 std::string& resident_error_out,
+                                 ResidentRequestContext& ctx) {
     endpoint_used_out.clear();
     http_status_out = 0;
     request_sent_out = false;
@@ -1356,28 +1431,46 @@ bool request_resident_correction(const std::string& raw_trimmed,
         json_escape(user_prompt) + "\"}],\"temperature\":" + std::to_string(get_correction_temperature()) +
         ",\"top_k\":" + std::to_string(get_correction_top_k()) + ",\"top_p\":" + std::to_string(get_correction_top_p()) +
         ",\"min_p\":" + std::to_string(get_correction_min_p()) +
-        ",\"n_predict\":" + std::to_string(get_correction_max_output_tokens()) + "}";
+        ",\"n_predict\":" + std::to_string(get_correction_max_output_tokens()) + ",\"stream\":false}";
     const std::string completion_prompt = sys_prompt + "\n\n" + user_prompt + "\n\nOnly output rewritten text.";
     const std::string completion_body = "{\"prompt\":\"" + json_escape(completion_prompt) + "\",\"temperature\":" +
                                         std::to_string(get_correction_temperature()) + ",\"top_k\":" +
                                         std::to_string(get_correction_top_k()) + ",\"top_p\":" +
                                         std::to_string(get_correction_top_p()) + ",\"min_p\":" +
                                         std::to_string(get_correction_min_p()) + ",\"n_predict\":" +
-                                        std::to_string(get_correction_max_output_tokens()) + "}";
+                                        std::to_string(get_correction_max_output_tokens()) + ",\"stream\":false}";
 
     struct Attempt {
         std::wstring path;
         const std::string* body;
     };
     const std::vector<Attempt> attempts = {{L"/v1/chat/completions", &chat_body}, {L"/v1/completions", &completion_body}, {L"/completion", &completion_body}};
-    const int timeout = get_correction_resident_request_timeout_ms();
     for (const auto& attempt : attempts) {
+        if (ctx.remaining_budget_ms <= 0) {
+            resident_error_out = "resident budget exhausted before request attempt";
+            ctx.last_error = resident_error_out;
+            break;
+        }
+        const int timeout = (std::min)(ctx.remaining_budget_ms, (std::max)(1, ctx.attempt_timeout_ms));
         request_sent_out = true;
+        ctx.request_count += 1;
         endpoint_used_out = std::string(attempt.path.begin(), attempt.path.end());
+        ctx.last_endpoint = endpoint_used_out;
+        std::cerr << "[LLM_RESIDENT_REQUEST_BEGIN] endpoint=" << endpoint_used_out << " timeout_ms=" << timeout
+                  << " remaining_budget_ms=" << ctx.remaining_budget_ms << "\n";
+        const auto attempt_begin = std::chrono::steady_clock::now();
         const HttpResult result = http_request_json(
             get_correction_resident_host(), get_correction_resident_port(), L"POST", attempt.path, attempt.body, timeout);
+        const int elapsed_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - attempt_begin).count());
+        ctx.remaining_budget_ms = (std::max)(0, ctx.remaining_budget_ms - elapsed_ms);
+        ctx.last_status = result.status_code;
         if (!result.transport_ok) {
             resident_error_out = result.error_text;
+            ctx.last_error = resident_error_out;
+            std::cerr << "[LLM_RESIDENT_REQUEST_END] endpoint=" << endpoint_used_out << " transport_ok=false status=0 extracted=false"
+                      << " remaining_budget_ms=" << ctx.remaining_budget_ms
+                      << " err=" << compact_debug_excerpt(resident_error_out, 180) << "\n";
             continue;
         }
         http_status_out = result.status_code;
@@ -1385,6 +1478,10 @@ bool request_resident_correction(const std::string& raw_trimmed,
         raw_stderr_excerpt.clear();
         if (result.status_code < 200 || result.status_code >= 300) {
             resident_error_out = "resident HTTP status " + std::to_string(result.status_code);
+            ctx.last_error = resident_error_out;
+            std::cerr << "[LLM_RESIDENT_REQUEST_END] endpoint=" << endpoint_used_out << " transport_ok=true status="
+                      << result.status_code << " extracted=false remaining_budget_ms=" << ctx.remaining_budget_ms
+                      << " err=" << compact_debug_excerpt(resident_error_out, 180) << "\n";
             continue;
         }
         corrected_text = trim_copy(extract_content_from_server_response(result.body_excerpt));
@@ -1393,9 +1490,16 @@ bool request_resident_correction(const std::string& raw_trimmed,
         }
         if (!corrected_text.empty()) {
             sanitizer_reason = "ok";
+            ctx.last_error.clear();
+            std::cerr << "[LLM_RESIDENT_REQUEST_END] endpoint=" << endpoint_used_out << " transport_ok=true status="
+                      << result.status_code << " extracted=true remaining_budget_ms=" << ctx.remaining_budget_ms << "\n";
             return true;
         }
         resident_error_out = "resident response had no usable content";
+        ctx.last_error = resident_error_out;
+        std::cerr << "[LLM_RESIDENT_REQUEST_END] endpoint=" << endpoint_used_out << " transport_ok=true status=" << result.status_code
+                  << " extracted=false remaining_budget_ms=" << ctx.remaining_budget_ms
+                  << " err=" << compact_debug_excerpt(resident_error_out, 180) << "\n";
     }
     sanitizer_reason = "resident response had no usable content";
     error_out = resident_error_out.empty() ? sanitizer_reason : resident_error_out;
@@ -1417,6 +1521,11 @@ bool run_single_correction(const std::filesystem::path& llama_exe,
     int resident_http_status = 0;
     bool resident_request_sent = false;
     std::string resident_error;
+    ResidentRequestContext resident_ctx;
+    resident_ctx.total_budget_ms = (std::max)(1, get_correction_resident_total_budget_ms());
+    resident_ctx.remaining_budget_ms = resident_ctx.total_budget_ms;
+    resident_ctx.attempt_timeout_ms = (std::max)(1, get_correction_resident_per_attempt_timeout_ms());
+    resident_ctx.phase = "idle";
     backend_used = "none";
     if (info_out) {
         info_out->resident_attempted = false;
@@ -1425,9 +1534,18 @@ bool run_single_correction(const std::filesystem::path& llama_exe,
         info_out->resident_request_sent = false;
         info_out->resident_http_status = 0;
         info_out->fallback_used = false;
+        info_out->resident_phase = "idle";
+        info_out->resident_total_budget_ms = resident_ctx.total_budget_ms;
+        info_out->resident_remaining_budget_ms = resident_ctx.remaining_budget_ms;
+        info_out->resident_attempt_timeout_ms = resident_ctx.attempt_timeout_ms;
+        info_out->resident_request_count = 0;
+        info_out->resident_last_status = 0;
         info_out->resident_error.clear();
+        info_out->resident_last_error.clear();
+        info_out->resident_reset_reason.clear();
         info_out->resident_startup_error.clear();
         info_out->resident_server_exe.clear();
+        info_out->resident_last_endpoint.clear();
         info_out->resident_endpoint_used.clear();
         info_out->resident_probe_used.clear();
         info_out->resident_args_excerpt.clear();
@@ -1447,7 +1565,29 @@ bool run_single_correction(const std::filesystem::path& llama_exe,
     if (info_out) {
         info_out->resident_attempted = prefer_resident;
     }
-    if (prefer_resident && start_resident_backend_if_needed(llama_model, startup_info)) {
+    if (prefer_resident) {
+        const auto resident_begin = std::chrono::steady_clock::now();
+        resident_ctx.phase = "startup";
+        const int startup_timeout = (std::min)(resident_ctx.remaining_budget_ms, (std::max)(1, get_correction_resident_startup_timeout_ms()));
+        std::cerr << "[LLM_RESIDENT_START_BEGIN] endpoint=process timeout_ms=" << startup_timeout
+                  << " remaining_budget_ms=" << resident_ctx.remaining_budget_ms << "\n";
+        if (resident_ctx.remaining_budget_ms <= 0) {
+            startup_info.startup_error = "resident budget exhausted before startup";
+            resident_ctx.last_error = startup_info.startup_error;
+            std::cerr << "[LLM_RESIDENT_START_END] ok=false endpoint=none timeout_ms=0 remaining_budget_ms=0 err="
+                      << compact_debug_excerpt(startup_info.startup_error, 180) << "\n";
+        } else {
+            const bool started = start_resident_backend_if_needed(
+                llama_model, startup_timeout, resident_ctx.remaining_budget_ms, startup_info, &resident_ctx);
+            const int startup_elapsed_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - resident_begin).count());
+            resident_ctx.remaining_budget_ms = (std::max)(0, resident_ctx.total_budget_ms - startup_elapsed_ms);
+            if (!started && resident_ctx.last_error.empty()) {
+                resident_ctx.last_error = startup_info.startup_error;
+            }
+        }
+    }
+    if (prefer_resident && startup_info.health_check_ok) {
         if (info_out) {
             info_out->resident_started = startup_info.started;
             info_out->resident_health_check_ok = startup_info.health_check_ok;
@@ -1468,16 +1608,26 @@ bool run_single_correction(const std::filesystem::path& llama_exe,
                 resident_endpoint_used,
                 resident_http_status,
                 resident_request_sent,
-                resident_error)) {
+                resident_error,
+                resident_ctx)) {
             backend_used = "resident";
+            resident_ctx.phase = "request_ok";
             std::cerr << "[LLM_BACKEND] resident\n";
         } else {
             backend_used = "resident_failed_then_oneshot";
+            resident_ctx.phase = "request_failed";
+            resident_ctx.reset_reason = resident_error.empty() ? "resident request failed" : resident_error;
+            std::cerr << "[LLM_RESIDENT_FALLBACK] endpoint=" << compact_debug_excerpt(resident_ctx.last_endpoint, 120)
+                      << " status=" << resident_ctx.last_status << " remaining_budget_ms=" << resident_ctx.remaining_budget_ms
+                      << " err=" << compact_debug_excerpt(resident_error.empty() ? error_out : resident_error, 200) << "\n";
+            reset_resident_backend_state(resident_ctx.reset_reason, true);
             std::cerr << "[LLM_RESIDENT_FALLBACK] " << error_out << "\n";
         }
     } else if (prefer_resident && !startup_info.startup_error.empty()) {
         backend_used = "resident_failed_then_oneshot";
         resident_error = startup_info.startup_error;
+        resident_ctx.phase = "startup_failed";
+        resident_ctx.last_error = resident_error;
         std::cerr << "[LLM_RESIDENT_FALLBACK] " << startup_info.startup_error << "\n";
     }
     if (info_out) {
@@ -1485,6 +1635,15 @@ bool run_single_correction(const std::filesystem::path& llama_exe,
         info_out->resident_endpoint_used = compact_debug_excerpt(resident_endpoint_used, 200);
         info_out->resident_http_status = resident_http_status != 0 ? resident_http_status : info_out->resident_http_status;
         info_out->resident_error = compact_debug_excerpt(resident_error, 400);
+        info_out->resident_phase = compact_debug_excerpt(resident_ctx.phase, 120);
+        info_out->resident_total_budget_ms = resident_ctx.total_budget_ms;
+        info_out->resident_remaining_budget_ms = resident_ctx.remaining_budget_ms;
+        info_out->resident_attempt_timeout_ms = resident_ctx.attempt_timeout_ms;
+        info_out->resident_request_count = resident_ctx.request_count;
+        info_out->resident_last_endpoint = compact_debug_excerpt(resident_ctx.last_endpoint, 200);
+        info_out->resident_last_status = resident_ctx.last_status;
+        info_out->resident_last_error = compact_debug_excerpt(resident_ctx.last_error, 400);
+        info_out->resident_reset_reason = compact_debug_excerpt(resident_ctx.reset_reason, 300);
     }
 
     if (corrected_text.empty()) {
@@ -1657,6 +1816,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
     bool any_resident_attempted = false;
     bool any_resident_started = false;
     bool any_fallback_used = false;
+    CorrectionRunInfo last_seg_info;
 
     for (std::size_t i = 0; i < segments.size(); ++i) {
         std::string seg_corrected;
@@ -1682,6 +1842,7 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
         any_resident_attempted = any_resident_attempted || seg_info.resident_attempted;
         any_resident_started = any_resident_started || seg_info.resident_started;
         any_fallback_used = any_fallback_used || seg_info.fallback_used;
+        last_seg_info = seg_info;
         if (!seg_info.raw_stdout_excerpt.empty()) {
             if (!raw_stdout_debug.empty()) {
                 raw_stdout_debug += " | ";
@@ -1717,6 +1878,15 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
         info_out->resident_attempted = any_resident_attempted;
         info_out->resident_started = any_resident_started;
         info_out->fallback_used = any_fallback_used;
+        info_out->resident_phase = last_seg_info.resident_phase;
+        info_out->resident_total_budget_ms = last_seg_info.resident_total_budget_ms;
+        info_out->resident_remaining_budget_ms = last_seg_info.resident_remaining_budget_ms;
+        info_out->resident_attempt_timeout_ms = last_seg_info.resident_attempt_timeout_ms;
+        info_out->resident_request_count = last_seg_info.resident_request_count;
+        info_out->resident_last_endpoint = last_seg_info.resident_last_endpoint;
+        info_out->resident_last_status = last_seg_info.resident_last_status;
+        info_out->resident_last_error = last_seg_info.resident_last_error;
+        info_out->resident_reset_reason = last_seg_info.resident_reset_reason;
         info_out->clean_output = corrected_text;
         info_out->segment_count = static_cast<int>(segments.size());
         info_out->failed_segment_indices = failed;
@@ -1765,6 +1935,15 @@ int run_llm_test_command(const std::string& input_text) {
     std::cout << "[LLM_TEST_RESIDENT_ENDPOINT] " << info.resident_endpoint_used << "\n";
     std::cout << "[LLM_TEST_RESIDENT_HTTP_STATUS] " << info.resident_http_status << "\n";
     std::cout << "[LLM_TEST_RESIDENT_ERROR] " << info.resident_error << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_PHASE] " << info.resident_phase << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_BUDGET_MS] " << info.resident_total_budget_ms << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_REMAINING_BUDGET_MS] " << info.resident_remaining_budget_ms << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_ATTEMPT_TIMEOUT_MS] " << info.resident_attempt_timeout_ms << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_REQUEST_COUNT] " << info.resident_request_count << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_LAST_ENDPOINT] " << info.resident_last_endpoint << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_LAST_STATUS] " << info.resident_last_status << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_LAST_ERROR] " << info.resident_last_error << "\n";
+    std::cout << "[LLM_TEST_RESIDENT_RESET_REASON] " << info.resident_reset_reason << "\n";
     std::cout << "[LLM_TEST_SEGMENTED] " << (info.segmented ? "true" : "false") << "\n";
     std::cout << "[LLM_TEST_SEGMENT_COUNT] " << info.segment_count << "\n";
     std::cout << "[LLM_TEST_MAX_OUTPUT_TOKENS] " << info.max_output_tokens << "\n";
@@ -1787,22 +1966,6 @@ int run_llm_test_command(const std::string& input_text) {
 
 void shutdown_llm_correction_backend() {
 #ifdef _WIN32
-    auto& state = resident_state();
-    std::lock_guard<std::mutex> guard(state.mutex);
-    if (!state.process_running) {
-        return;
-    }
-    if (state.process.hProcess) {
-        TerminateProcess(state.process.hProcess, 0);
-        WaitForSingleObject(state.process.hProcess, 2000);
-        CloseHandle(state.process.hProcess);
-        state.process.hProcess = nullptr;
-    }
-    if (state.process.hThread) {
-        CloseHandle(state.process.hThread);
-        state.process.hThread = nullptr;
-    }
-    state.process_running = false;
-    state.ready = false;
+    reset_resident_backend_state("shutdown", false);
 #endif
 }

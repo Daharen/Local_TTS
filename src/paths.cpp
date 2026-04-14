@@ -130,6 +130,14 @@ int get_correction_resident_request_timeout_ms() {
     return get_app_config().correction_resident_request_timeout_ms;
 }
 
+int get_correction_resident_total_budget_ms() {
+    return get_app_config().correction_resident_total_budget_ms;
+}
+
+int get_correction_resident_per_attempt_timeout_ms() {
+    return get_app_config().correction_resident_per_attempt_timeout_ms;
+}
+
 std::string describe_paths_json() {
     const auto repo = get_repo_root().string();
     const auto data = get_large_data_root().string();
@@ -165,7 +173,9 @@ std::string describe_paths_json() {
         << "  \"correction_resident_gpu_layers\": " << get_correction_resident_gpu_layers() << ",\n"
         << "  \"correction_resident_threads\": " << get_correction_resident_threads() << ",\n"
         << "  \"correction_resident_startup_timeout_ms\": " << get_correction_resident_startup_timeout_ms() << ",\n"
-        << "  \"correction_resident_request_timeout_ms\": " << get_correction_resident_request_timeout_ms() << "\n"
+        << "  \"correction_resident_request_timeout_ms\": " << get_correction_resident_request_timeout_ms() << ",\n"
+        << "  \"correction_resident_total_budget_ms\": " << get_correction_resident_total_budget_ms() << ",\n"
+        << "  \"correction_resident_per_attempt_timeout_ms\": " << get_correction_resident_per_attempt_timeout_ms() << "\n"
         << "}";
     return out.str();
 }
