@@ -53,5 +53,6 @@ bool correct_transcript_text_with_info(const std::string& raw_text,
                                        std::string& corrected_text,
                                        std::string& error_out,
                                        CorrectionRunInfo* info_out);
+bool ensure_llm_correction_backend_ready(CorrectionRunInfo* info_out, std::string& error_out);
 int run_llm_test_command(const std::string& input_text);
 void shutdown_llm_correction_backend();

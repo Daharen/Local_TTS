@@ -120,6 +120,7 @@ public:
             return 1;
         }
         set_state(L"Idle");
+        start_resident_prewarm();
         if (!debug_console_) {
             ShowWindow(window_, SW_HIDE);
         }
@@ -832,6 +833,28 @@ private:
         }
     }
 
+    void start_resident_prewarm() {
+        if (prewarm_started_.exchange(true)) {
+            return;
+        }
+        prewarm_thread_ = std::thread([this]() {
+            debug_line("[LLM_RESIDENT_PREWARM_BEGIN]");
+            CorrectionRunInfo info;
+            std::string error;
+            const bool ok = ensure_llm_correction_backend_ready(&info, error);
+            std::string details = "ok=" + std::string(ok ? "true" : "false");
+            if (!info.resident_phase.empty()) {
+                details += " phase=" + info.resident_phase;
+            }
+            if (!info.resident_startup_error.empty()) {
+                details += " startup_error=" + compact_excerpt(info.resident_startup_error, 180);
+            } else if (!error.empty()) {
+                details += " error=" + compact_excerpt(error, 180);
+            }
+            debug_line("[LLM_RESIDENT_PREWARM_END] " + details, !ok);
+        });
+    }
+
     bool create_tray_icon() {
         std::memset(&tray_icon_, 0, sizeof(tray_icon_));
         tray_icon_.cbSize = sizeof(tray_icon_);
@@ -902,6 +925,9 @@ private:
             worker_.join();
             transcribing_.store(false);
         }
+        if (prewarm_thread_.joinable()) {
+            prewarm_thread_.join();
+        }
         dashboard::close_dashboard_window();
         DestroyWindow(window_);
     }
@@ -910,6 +936,9 @@ private:
         capture_.cleanup();
         if (worker_.joinable()) {
             worker_.join();
+        }
+        if (prewarm_thread_.joinable()) {
+            prewarm_thread_.join();
         }
         if (tray_icon_.hWnd) {
             Shell_NotifyIconW(NIM_DELETE, &tray_icon_);
@@ -920,12 +949,14 @@ private:
     HWND window_ = nullptr;
     HWND target_window_ = nullptr;
     std::thread worker_;
+    std::thread prewarm_thread_;
     AudioCapture capture_;
     NOTIFYICONDATAW tray_icon_{};
     std::wstring state_text_ = L"Idle";
     std::atomic<bool> transcribing_{false};
     bool recording_ = false;
     bool shutting_down_ = false;
+    std::atomic<bool> prewarm_started_{false};
     bool debug_console_ = false;
     uint64_t session_id_ = 0;
 };
