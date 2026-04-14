@@ -400,9 +400,9 @@ AppConfig make_default_config() {
     config.correction_resident_ctx_size = 4096;
     config.correction_resident_gpu_layers = -1;
     config.correction_resident_threads = 8;
-    config.correction_resident_startup_timeout_ms = 8000;
+    config.correction_resident_startup_timeout_ms = 20000;
     config.correction_resident_request_timeout_ms = 15000;
-    config.correction_resident_total_budget_ms = 5000;
+    config.correction_resident_total_budget_ms = 35000;
     config.correction_resident_per_attempt_timeout_ms = 2500;
     config.correction_max_output_tokens = 512;
     config.correction_segment_max_chars = 1600;
