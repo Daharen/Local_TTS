@@ -22,6 +22,7 @@
 #include <thread>
 #include <cwchar>
 #include <algorithm>
+#include <cstdint>
 
 #ifdef _WIN32
 #include <shellapi.h>
@@ -76,6 +77,38 @@ std::string sanitize_payload_text(const std::string& input) {
     }
     const auto last = out.find_last_not_of(" \t\r\n");
     return out.substr(first, last - first + 1);
+}
+
+std::string compact_excerpt(const std::string& text, std::size_t limit = 220) {
+    if (text.size() <= limit) {
+        return text;
+    }
+    if (limit < 8) {
+        return text.substr(0, limit);
+    }
+    return text.substr(0, limit - 3) + "...";
+}
+
+int rough_word_count(const std::string& text) {
+    int words = 0;
+    bool in_word = false;
+    for (unsigned char ch : text) {
+        if (std::isspace(ch)) {
+            in_word = false;
+            continue;
+        }
+        if (!in_word) {
+            ++words;
+            in_word = true;
+        }
+    }
+    return words;
+}
+
+std::string hwnd_to_string(HWND hwnd) {
+    std::ostringstream out;
+    out << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(hwnd);
+    return out.str();
 }
 
 class LiveModeApp {
@@ -141,6 +174,12 @@ private:
         int correction_max_output_tokens = 0;
         std::string correction_failed_segments;
         std::string paste_error;
+        std::string resident_args_excerpt;
+        std::string resident_probe_response_excerpt;
+        int whisper_text_chars = 0;
+        int whisper_text_words = 0;
+        int llm_output_chars = 0;
+        int llm_output_words = 0;
     };
 
     void debug_line(const std::string& line, bool as_error = false) const {
@@ -320,6 +359,11 @@ private:
                     debug_line("[WHISPER_ERROR] " + log.transcribe_error, true);
                 } else {
                     debug_line("[RAW_WHISPER] " + log.raw_transcript);
+                    log.whisper_text_chars = static_cast<int>(log.raw_transcript.size());
+                    log.whisper_text_words = rough_word_count(log.raw_transcript);
+                    debug_line("[HANDOFF_WHISPER_TO_LLM_BEGIN] chars=" + std::to_string(log.whisper_text_chars) +
+                               " words=" + std::to_string(log.whisper_text_words) +
+                               " preview=" + compact_excerpt(log.raw_transcript));
                 }
             }
 
@@ -357,6 +401,8 @@ private:
                     log.resident_gpu_layers = info.resident_gpu_layers;
                     log.resident_ctx_size = info.resident_ctx_size;
                     log.resident_threads = info.resident_threads;
+                    log.resident_args_excerpt = info.resident_args_excerpt;
+                    log.resident_probe_response_excerpt = info.resident_probe_response_excerpt;
                     log.oneshot_stderr_cuda_hint = info.oneshot_stderr_cuda_hint;
                     output_text = log.formatted_text;
                     log.correction_applied = true;
@@ -411,6 +457,12 @@ private:
                                " threads=" + std::to_string(log.resident_threads));
                     if (!log.resident_server_exe.empty()) {
                         debug_line("[LLM_RESIDENT_SERVER_EXE] " + log.resident_server_exe);
+                    }
+                    if (!log.resident_args_excerpt.empty()) {
+                        debug_line("[LLM_RESIDENT_START_ARGS] " + log.resident_args_excerpt);
+                    }
+                    if (!log.resident_probe_response_excerpt.empty()) {
+                        debug_line("[LLM_RESIDENT_PROBE_RESPONSE] " + log.resident_probe_response_excerpt);
                     }
                     if (!log.correction_raw_stdout.empty()) {
                         debug_line("[CORRECTION_RAW_STDOUT] " + log.correction_raw_stdout);
@@ -475,6 +527,8 @@ private:
                     log.resident_gpu_layers = info.resident_gpu_layers;
                     log.resident_ctx_size = info.resident_ctx_size;
                     log.resident_threads = info.resident_threads;
+                    log.resident_args_excerpt = info.resident_args_excerpt;
+                    log.resident_probe_response_excerpt = info.resident_probe_response_excerpt;
                     log.oneshot_stderr_cuda_hint = info.oneshot_stderr_cuda_hint;
                     log.correction_segmented = info.segmented;
                     log.correction_segment_count = info.segment_count;
@@ -525,6 +579,12 @@ private:
                     if (!log.resident_server_exe.empty()) {
                         debug_line("[LLM_RESIDENT_SERVER_EXE] " + log.resident_server_exe);
                     }
+                    if (!log.resident_args_excerpt.empty()) {
+                        debug_line("[LLM_RESIDENT_START_ARGS] " + log.resident_args_excerpt);
+                    }
+                    if (!log.resident_probe_response_excerpt.empty()) {
+                        debug_line("[LLM_RESIDENT_PROBE_RESPONSE] " + log.resident_probe_response_excerpt);
+                    }
                     if (!log.correction_raw_stdout.empty()) {
                         debug_line("[CORRECTION_RAW_STDOUT] " + log.correction_raw_stdout);
                     }
@@ -567,6 +627,12 @@ private:
                 diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::Correction, "correction not used");
             }
 
+            log.llm_output_chars = static_cast<int>(output_text.size());
+            log.llm_output_words = rough_word_count(output_text);
+            debug_line("[HANDOFF_WHISPER_TO_LLM_END] backend=" + (log.llm_backend.empty() ? "none" : log.llm_backend) +
+                       " chars=" + std::to_string(log.llm_output_chars) + " words=" + std::to_string(log.llm_output_words) +
+                       " preview=" + compact_excerpt(output_text));
+
             diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Sanitization, "sanitize output");
             output_text = sanitize_payload_text(output_text);
             diagnostics::diag_end(session_id_,
@@ -579,17 +645,25 @@ private:
                 diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Paste, "paste begin");
                 HWND current = GetForegroundWindow();
                 const bool target_valid = target_window_ && IsWindow(target_window_) && IsWindowVisible(target_window_);
+                debug_line("[HANDOFF_LLM_TO_WINDOWS_BEGIN] chars=" + std::to_string(log.llm_output_chars) +
+                           " words=" + std::to_string(log.llm_output_words) +
+                           " target_valid=" + (target_valid ? "true" : "false") +
+                           " focus_match=" + ((current == target_window_) ? "true" : "false") +
+                           " target_hwnd=" + hwnd_to_string(target_window_) +
+                           " current_hwnd=" + hwnd_to_string(current));
 
                 if (!target_valid) {
                     log.paste_skipped = true;
                     log.paste_error = "Target window is no longer valid/visible.";
                     debug_line("[PASTE_SKIPPED] " + log.paste_error, true);
+                    debug_line("[HANDOFF_LLM_TO_WINDOWS_END] outcome=skipped reason=" + log.paste_error, true);
                     diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Skipped);
                     diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, log.paste_error, true, false);
                 } else if (current != target_window_) {
                     log.paste_skipped = true;
                     log.paste_error = "Focus changed; paste skipped to avoid disruptive window changes.";
                     debug_line("[PASTE_SKIPPED] " + log.paste_error, true);
+                    debug_line("[HANDOFF_LLM_TO_WINDOWS_END] outcome=skipped reason=" + log.paste_error, true);
                     diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Skipped);
                     diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, log.paste_error, true, false);
                 } else {
@@ -598,11 +672,13 @@ private:
                         log.paste_failed = true;
                         log.paste_error = inject_error;
                         debug_line("[PASTE_FAILED] " + inject_error, true);
+                        debug_line("[HANDOFF_LLM_TO_WINDOWS_END] outcome=failed reason=" + inject_error, true);
                         diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Failed);
                         diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, inject_error, true, false);
                     } else {
                         log.paste_done = true;
                         debug_line("[PASTE_DONE]");
+                        debug_line("[HANDOFF_LLM_TO_WINDOWS_END] outcome=done");
                         diagnostics::set_paste_outcome(session_id_, diagnostics::PasteOutcome::Done);
                         diagnostics::diag_end(session_id_, diagnostics::DiagnosticStage::Paste, "paste done", true, true);
                     }
@@ -691,7 +767,15 @@ private:
         if (!log.resident_server_exe.empty()) {
             out << "[LLM_RESIDENT_SERVER_EXE] " << log.resident_server_exe << "\n";
         }
+        if (!log.resident_args_excerpt.empty()) {
+            out << "[LLM_RESIDENT_START_ARGS] " << log.resident_args_excerpt << "\n";
+        }
+        if (!log.resident_probe_response_excerpt.empty()) {
+            out << "[LLM_RESIDENT_PROBE_RESPONSE] " << log.resident_probe_response_excerpt << "\n";
+        }
         out << "[ONESHOT_STDERR_CUDA_HINT] " << (log.oneshot_stderr_cuda_hint ? "true" : "false") << "\n";
+        out << "[WHISPER_TEXT_METRICS] chars=" << log.whisper_text_chars << " words=" << log.whisper_text_words << "\n";
+        out << "[LLM_OUTPUT_METRICS] chars=" << log.llm_output_chars << " words=" << log.llm_output_words << "\n";
 
         if (!log.raw_transcript.empty()) {
             out << "[RAW_WHISPER] " << log.raw_transcript << "\n";
