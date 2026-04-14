@@ -115,6 +115,17 @@ private:
         std::string correction_raw_stdout;
         std::string correction_raw_stderr;
         std::string correction_sanitizer_reason;
+        bool resident_attempted = false;
+        bool resident_started = false;
+        std::string resident_startup_error;
+        std::string resident_endpoint_used;
+        int resident_http_status = 0;
+        std::string resident_error;
+        std::string resident_server_exe;
+        int resident_gpu_layers = 0;
+        int resident_ctx_size = 0;
+        int resident_threads = 0;
+        bool oneshot_stderr_cuda_hint = false;
         bool correction_segmented = false;
         int correction_segment_count = 0;
         int correction_max_output_tokens = 0;
@@ -316,6 +327,17 @@ private:
                     log.correction_raw_stdout = info.raw_stdout_excerpt;
                     log.correction_raw_stderr = info.raw_stderr_excerpt;
                     log.correction_sanitizer_reason = info.sanitizer_reason;
+                    log.resident_attempted = info.resident_attempted;
+                    log.resident_started = info.resident_started;
+                    log.resident_startup_error = info.resident_startup_error;
+                    log.resident_endpoint_used = info.resident_endpoint_used.empty() ? info.resident_probe_used : info.resident_endpoint_used;
+                    log.resident_http_status = info.resident_http_status;
+                    log.resident_error = info.resident_error;
+                    log.resident_server_exe = info.resident_server_exe;
+                    log.resident_gpu_layers = info.resident_gpu_layers;
+                    log.resident_ctx_size = info.resident_ctx_size;
+                    log.resident_threads = info.resident_threads;
+                    log.oneshot_stderr_cuda_hint = info.oneshot_stderr_cuda_hint;
                     output_text = log.formatted_text;
                     log.correction_applied = true;
                     log.correction_segmented = info.segmented;
@@ -334,6 +356,23 @@ private:
                     debug_line("[CORRECTION_SEGMENT_COUNT] " + std::to_string(log.correction_segment_count));
                     debug_line("[CORRECTION_MAX_OUTPUT_TOKENS] " + std::to_string(log.correction_max_output_tokens));
                     debug_line("[LLM_BACKEND] " + (log.llm_backend.empty() ? "none" : log.llm_backend));
+                    debug_line(std::string("[LLM_RESIDENT_ATTEMPTED] ") + (log.resident_attempted ? "true" : "false"));
+                    debug_line(std::string("[LLM_RESIDENT_STARTED] ") + (log.resident_started ? "true" : "false"));
+                    if (!log.resident_endpoint_used.empty()) {
+                        debug_line("[LLM_RESIDENT_ENDPOINT] " + log.resident_endpoint_used);
+                    }
+                    if (log.resident_http_status > 0) {
+                        debug_line("[LLM_RESIDENT_HTTP_STATUS] " + std::to_string(log.resident_http_status));
+                    }
+                    if (!log.resident_error.empty()) {
+                        debug_line("[LLM_RESIDENT_ERROR] " + log.resident_error);
+                    }
+                    debug_line("[LLM_RESIDENT_CONFIG] gpu_layers=" + std::to_string(log.resident_gpu_layers) +
+                               " ctx=" + std::to_string(log.resident_ctx_size) +
+                               " threads=" + std::to_string(log.resident_threads));
+                    if (!log.resident_server_exe.empty()) {
+                        debug_line("[LLM_RESIDENT_SERVER_EXE] " + log.resident_server_exe);
+                    }
                     if (!log.correction_raw_stdout.empty()) {
                         debug_line("[CORRECTION_RAW_STDOUT] " + log.correction_raw_stdout);
                     }
@@ -354,7 +393,12 @@ private:
                                                       "",
                                                       log.correction_sanitizer_reason,
                                                       log.correction_raw_stdout,
-                                                      log.correction_raw_stderr);
+                                                      log.correction_raw_stderr,
+                                                      log.resident_attempted,
+                                                      log.resident_started,
+                                                      log.resident_startup_error,
+                                                      log.resident_endpoint_used,
+                                                      log.resident_http_status);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -369,6 +413,17 @@ private:
                     log.correction_raw_stdout = info.raw_stdout_excerpt;
                     log.correction_raw_stderr = info.raw_stderr_excerpt;
                     log.correction_sanitizer_reason = info.sanitizer_reason;
+                    log.resident_attempted = info.resident_attempted;
+                    log.resident_started = info.resident_started;
+                    log.resident_startup_error = info.resident_startup_error;
+                    log.resident_endpoint_used = info.resident_endpoint_used.empty() ? info.resident_probe_used : info.resident_endpoint_used;
+                    log.resident_http_status = info.resident_http_status;
+                    log.resident_error = info.resident_error.empty() ? info.resident_startup_error : info.resident_error;
+                    log.resident_server_exe = info.resident_server_exe;
+                    log.resident_gpu_layers = info.resident_gpu_layers;
+                    log.resident_ctx_size = info.resident_ctx_size;
+                    log.resident_threads = info.resident_threads;
+                    log.oneshot_stderr_cuda_hint = info.oneshot_stderr_cuda_hint;
                     log.correction_segmented = info.segmented;
                     log.correction_segment_count = info.segment_count;
                     if (!info.failed_segment_indices.empty()) {
@@ -382,6 +437,23 @@ private:
                         log.correction_failed_segments = failed.str();
                     }
                     debug_line("[LLM_BACKEND] " + (log.llm_backend.empty() ? "none" : log.llm_backend));
+                    debug_line(std::string("[LLM_RESIDENT_ATTEMPTED] ") + (log.resident_attempted ? "true" : "false"));
+                    debug_line(std::string("[LLM_RESIDENT_STARTED] ") + (log.resident_started ? "true" : "false"));
+                    if (!log.resident_endpoint_used.empty()) {
+                        debug_line("[LLM_RESIDENT_ENDPOINT] " + log.resident_endpoint_used);
+                    }
+                    if (log.resident_http_status > 0) {
+                        debug_line("[LLM_RESIDENT_HTTP_STATUS] " + std::to_string(log.resident_http_status));
+                    }
+                    if (!log.resident_error.empty()) {
+                        debug_line("[LLM_RESIDENT_ERROR] " + log.resident_error);
+                    }
+                    debug_line("[LLM_RESIDENT_CONFIG] gpu_layers=" + std::to_string(log.resident_gpu_layers) +
+                               " ctx=" + std::to_string(log.resident_ctx_size) +
+                               " threads=" + std::to_string(log.resident_threads));
+                    if (!log.resident_server_exe.empty()) {
+                        debug_line("[LLM_RESIDENT_SERVER_EXE] " + log.resident_server_exe);
+                    }
                     if (!log.correction_raw_stdout.empty()) {
                         debug_line("[CORRECTION_RAW_STDOUT] " + log.correction_raw_stdout);
                     }
@@ -400,7 +472,12 @@ private:
                                                       log.correction_error,
                                                       log.correction_sanitizer_reason,
                                                       log.correction_raw_stdout,
-                                                      log.correction_raw_stderr);
+                                                      log.correction_raw_stderr,
+                                                      log.resident_attempted,
+                                                      log.resident_started,
+                                                      log.resident_startup_error,
+                                                      log.resident_endpoint_used,
+                                                      log.resident_http_status);
                     diagnostics::set_segmentation(session_id_, log.correction_segmented, log.correction_segment_count);
                     diagnostics::diag_end(session_id_,
                                           diagnostics::DiagnosticStage::Correction,
@@ -411,7 +488,7 @@ private:
             } else if (!log.raw_transcript.empty()) {
                 debug_line("[CORRECTION_APPLIED] false");
                 diagnostics::set_correction_applied(session_id_, false);
-                diagnostics::set_correction_debug(session_id_, "none", "", "", "", "");
+                diagnostics::set_correction_debug(session_id_, "none", "", "", "", "", false, false, "", "", 0);
                 diagnostics::diag_point(session_id_, diagnostics::DiagnosticStage::Correction, "correction not used");
             }
 
@@ -500,6 +577,27 @@ private:
         if (!log.correction_sanitizer_reason.empty()) {
             out << "[CORRECTION_SANITIZER_REASON] " << log.correction_sanitizer_reason << "\n";
         }
+        out << "[LLM_RESIDENT_ATTEMPTED] " << (log.resident_attempted ? "true" : "false") << "\n";
+        out << "[LLM_RESIDENT_STARTED] " << (log.resident_started ? "true" : "false") << "\n";
+        if (!log.resident_startup_error.empty()) {
+            out << "[LLM_RESIDENT_STARTUP_ERROR] " << log.resident_startup_error << "\n";
+        }
+        if (!log.resident_endpoint_used.empty()) {
+            out << "[LLM_RESIDENT_ENDPOINT] " << log.resident_endpoint_used << "\n";
+        }
+        if (log.resident_http_status > 0) {
+            out << "[LLM_RESIDENT_HTTP_STATUS] " << log.resident_http_status << "\n";
+        }
+        if (!log.resident_error.empty()) {
+            out << "[LLM_RESIDENT_ERROR] " << log.resident_error << "\n";
+        }
+        out << "[LLM_RESIDENT_CONFIG] gpu_layers=" << log.resident_gpu_layers
+            << " ctx=" << log.resident_ctx_size
+            << " threads=" << log.resident_threads << "\n";
+        if (!log.resident_server_exe.empty()) {
+            out << "[LLM_RESIDENT_SERVER_EXE] " << log.resident_server_exe << "\n";
+        }
+        out << "[ONESHOT_STDERR_CUDA_HINT] " << (log.oneshot_stderr_cuda_hint ? "true" : "false") << "\n";
 
         if (!log.raw_transcript.empty()) {
             out << "[RAW_WHISPER] " << log.raw_transcript << "\n";

@@ -161,13 +161,23 @@ public:
                               const std::string& error,
                               const std::string& sanitizer_reason,
                               const std::string& raw_stdout_excerpt,
-                              const std::string& raw_stderr_excerpt) noexcept {
+                              const std::string& raw_stderr_excerpt,
+                              bool resident_attempted,
+                              bool resident_started,
+                              const std::string& resident_startup_error,
+                              const std::string& resident_endpoint_used,
+                              int resident_http_status) noexcept {
         update_session(session_id, [&](SessionWork& s) {
             s.snapshot.correction_backend = backend;
             s.snapshot.correction_error = error;
             s.snapshot.correction_sanitizer_reason = sanitizer_reason;
             s.snapshot.correction_raw_stdout_excerpt = raw_stdout_excerpt;
             s.snapshot.correction_raw_stderr_excerpt = raw_stderr_excerpt;
+            s.snapshot.resident_attempted = resident_attempted;
+            s.snapshot.resident_started = resident_started;
+            s.snapshot.resident_startup_error = resident_startup_error;
+            s.snapshot.resident_endpoint_used = resident_endpoint_used;
+            s.snapshot.resident_http_status = resident_http_status;
         });
     }
 
@@ -386,8 +396,23 @@ void set_correction_debug(uint64_t session_id,
                           const std::string& error,
                           const std::string& sanitizer_reason,
                           const std::string& raw_stdout_excerpt,
-                          const std::string& raw_stderr_excerpt) noexcept {
-    store().set_correction_debug(session_id, backend, error, sanitizer_reason, raw_stdout_excerpt, raw_stderr_excerpt);
+                          const std::string& raw_stderr_excerpt,
+                          bool resident_attempted,
+                          bool resident_started,
+                          const std::string& resident_startup_error,
+                          const std::string& resident_endpoint_used,
+                          int resident_http_status) noexcept {
+    store().set_correction_debug(session_id,
+                                 backend,
+                                 error,
+                                 sanitizer_reason,
+                                 raw_stdout_excerpt,
+                                 raw_stderr_excerpt,
+                                 resident_attempted,
+                                 resident_started,
+                                 resident_startup_error,
+                                 resident_endpoint_used,
+                                 resident_http_status);
 }
 
 void set_segmentation(uint64_t session_id, bool segmented, int segment_count) noexcept {

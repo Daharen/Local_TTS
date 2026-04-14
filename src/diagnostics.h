@@ -79,6 +79,11 @@ struct PipelineSnapshot {
     std::string correction_sanitizer_reason;
     std::string correction_raw_stdout_excerpt;
     std::string correction_raw_stderr_excerpt;
+    bool resident_attempted = false;
+    bool resident_started = false;
+    std::string resident_startup_error;
+    std::string resident_endpoint_used;
+    int resident_http_status = 0;
     bool segmented = false;
     int segment_count = 0;
     PasteOutcome paste_outcome = PasteOutcome::Unknown;
@@ -122,7 +127,12 @@ void set_correction_debug(uint64_t session_id,
                           const std::string& error,
                           const std::string& sanitizer_reason,
                           const std::string& raw_stdout_excerpt,
-                          const std::string& raw_stderr_excerpt) noexcept;
+                          const std::string& raw_stderr_excerpt,
+                          bool resident_attempted,
+                          bool resident_started,
+                          const std::string& resident_startup_error,
+                          const std::string& resident_endpoint_used,
+                          int resident_http_status) noexcept;
 void set_segmentation(uint64_t session_id, bool segmented, int segment_count) noexcept;
 void set_paste_outcome(uint64_t session_id, PasteOutcome outcome) noexcept;
 void set_recording_stop_time(uint64_t session_id) noexcept;
@@ -152,7 +162,12 @@ inline void set_correction_debug(uint64_t,
                                  const std::string&,
                                  const std::string&,
                                  const std::string&,
-                                 const std::string&) noexcept {}
+                                 const std::string&,
+                                 bool,
+                                 bool,
+                                 const std::string&,
+                                 const std::string&,
+                                 int) noexcept {}
 inline void set_segmentation(uint64_t, bool, int) noexcept {}
 inline void set_paste_outcome(uint64_t, PasteOutcome) noexcept {}
 inline void set_recording_stop_time(uint64_t) noexcept {}
