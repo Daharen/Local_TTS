@@ -59,6 +59,17 @@ std::string format_snapshot(const diagnostics::DiagnosticsSnapshot& snapshot) {
     append_metric(out, "total hotkey-to-paste", session.total_end_to_end_duration_ms);
     out << "correction applied: " << (session.correction_applied ? "true" : "false") << '\n';
     out << "backend used: " << (session.correction_backend.empty() ? "n/a" : session.correction_backend) << '\n';
+    out << "resident attempted: " << (session.resident_attempted ? "true" : "false") << '\n';
+    out << "resident started: " << (session.resident_started ? "true" : "false") << '\n';
+    if (!session.resident_startup_error.empty()) {
+        out << "resident startup error: " << session.resident_startup_error << '\n';
+    }
+    if (!session.resident_endpoint_used.empty()) {
+        out << "resident endpoint used: " << session.resident_endpoint_used << '\n';
+    }
+    if (session.resident_http_status > 0) {
+        out << "resident HTTP status: " << session.resident_http_status << '\n';
+    }
     if (!session.correction_error.empty()) {
         out << "correction error: " << session.correction_error << '\n';
     }
