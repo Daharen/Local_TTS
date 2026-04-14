@@ -10,13 +10,12 @@ Local-first C++ transcription for Windows using external `whisper.cpp` and optio
 - `./run.ps1 llm-test "<text>"`
 
 ## Live mode dashboard
-- When dashboard support is enabled, the tray menu includes `Dashboard` and `Exit`.
-- `Dashboard` currently opens a blank Win32 verification window titled `Local TTS Dashboard`.
-- Richer dashboard contents will be added in a later pass.
-- Live dictation remains non-blocking and keeps running even if dashboard creation or diagnostics updates fail.
+- Dashboard support is enabled by default at build time.
+- You can still disable it explicitly with `-DLOCAL_TTS_ENABLE_DASHBOARD=OFF`.
+- When enabled, the tray menu includes `Dashboard` and `Exit`.
+- `Dashboard` opens a Win32 diagnostics window with live dictation timing/session state and recent pipeline events.
+- The dashboard is observational only (best-effort): live dictation remains non-blocking even if dashboard open/update paths fail.
 - No additional GUI framework dependency is introduced.
-- Dashboard support is optional and disabled by default at build time.
-- Enable it explicitly with `-DLOCAL_TTS_ENABLE_DASHBOARD=ON`.
 
 ## Runtime config
 - `runtime.repo.json` is the committed central settings file for normal tuning.

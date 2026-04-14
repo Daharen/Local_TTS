@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(LOCAL_TTS_ENABLE_DASHBOARD "Enable diagnostics dashboard support" OFF)
+option(LOCAL_TTS_ENABLE_DASHBOARD "Enable diagnostics dashboard support" ON)
 
 set(LOCAL_TTS_SOURCES
     src/main.cpp
