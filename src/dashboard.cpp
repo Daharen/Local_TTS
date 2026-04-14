@@ -172,12 +172,11 @@ private:
             return;
         }
         const int padding = 8;
-        MoveWindow(text_hwnd_,
-                   padding,
-                   padding,
-                   (std::max)(0, (rc.right - rc.left) - (padding * 2)),
-                   (std::max)(0, (rc.bottom - rc.top) - (padding * 2)),
-                   TRUE);
+        const int client_width = static_cast<int>(rc.right - rc.left);
+        const int client_height = static_cast<int>(rc.bottom - rc.top);
+        const int content_width = (std::max)(0, client_width - (padding * 2));
+        const int content_height = (std::max)(0, client_height - (padding * 2));
+        MoveWindow(text_hwnd_, padding, padding, content_width, content_height, TRUE);
     }
 
     void refresh_text() noexcept {
