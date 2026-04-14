@@ -5,6 +5,7 @@
 #include "diagnostics.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <sstream>
 #include <string>
 
@@ -136,7 +137,7 @@ public:
     HWND hwnd() const noexcept { return hwnd_; }
 
 private:
-    bool create_contents() noexcept {
+    bool create_contents(HWND hwnd) noexcept {
         try {
             text_hwnd_ = CreateWindowExW(WS_EX_CLIENTEDGE,
                                          L"EDIT",
@@ -147,7 +148,7 @@ private:
                                          0,
                                          100,
                                          100,
-                                         hwnd_,
+                                         hwnd,
                                          nullptr,
                                          GetModuleHandleW(nullptr),
                                          nullptr);
@@ -155,7 +156,7 @@ private:
                 return false;
             }
             SendMessageW(text_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-            diagnostics::register_dashboard_window(hwnd_);
+            diagnostics::register_dashboard_window(hwnd);
             refresh_text();
             return true;
         } catch (...) {
@@ -198,6 +199,9 @@ private:
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
             self = reinterpret_cast<DashboardWindow*>(cs->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+            if (self) {
+                self->hwnd_ = hwnd;
+            }
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
 
@@ -207,7 +211,8 @@ private:
 
         const UINT update_msg = diagnostics::dashboard_update_message();
         if (msg == WM_CREATE) {
-            return self->create_contents() ? 0 : -1;
+            self->hwnd_ = hwnd;
+            return self->create_contents(hwnd) ? 0 : -1;
         }
         if (msg == WM_SIZE) {
             self->layout_contents();
@@ -248,6 +253,9 @@ bool show_dashboard_window(HWND owner, bool debug_console) noexcept {
         }
         auto* window = new DashboardWindow(debug_console);
         if (!window->create(owner)) {
+            if (debug_console) {
+                std::fputs("[dashboard] show_dashboard_window: create failed\n", stderr);
+            }
             delete window;
             return false;
         }
