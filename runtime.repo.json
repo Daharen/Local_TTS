@@ -1,6 +1,11 @@
 {
   "large_data_root": "F:\\Local_TTS_Large_Data",
-  "whisper_cpp_root": "F:\\Local_TTS_Large_Data\\external\\whisper.cpp",
+  "whisper_cpp_root": "F:\\Local_TTS_Large_Data\\external\\whisper.cpp_cuda",
+  "whisper_cli_path": "F:\\Local_TTS_Large_Data\\external\\whisper.cpp_cuda\\build\\bin\\Release\\whisper-cli.exe",
+  "whisper_use_gpu": true,
+  "whisper_gpu_device": 0,
+  "whisper_flash_attn": false,
+  "whisper_threads": 4,
   "whisper_model_path": "F:\\Local_TTS_Large_Data\\models\\whisper.cpp\\ggml-base.en.bin",
   "llama_cpp_root": "F:\\Qwen3.5-27B\\llama.cpp",
   "llama_model_path": "F:\\Qwen3.5-27B\\small-model-3b\\Qwen2.5-3B-Instruct-IQ4_XS.gguf",
