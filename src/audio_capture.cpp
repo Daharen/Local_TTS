@@ -1,5 +1,7 @@
 #include "audio_capture.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 
@@ -23,13 +25,14 @@ bool AudioCapture::start() {
     }
 
     samples_.clear();
+    rolling_pcm_.clear();
     buffers_.clear();
     headers_.clear();
 
     WAVEFORMATEX format{};
     format.wFormatTag = WAVE_FORMAT_PCM;
     format.nChannels = 1;
-    format.nSamplesPerSec = 16000;
+    format.nSamplesPerSec = AudioCapture::kSampleRate;
     format.wBitsPerSample = 16;
     format.nBlockAlign = static_cast<WORD>(format.nChannels * format.wBitsPerSample / 8);
     format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
@@ -177,6 +180,27 @@ void AudioCapture::cleanup() {
 #endif
 }
 
+void AudioCapture::get_latest_pcm_ms(int ms, std::vector<float>& out_pcm) const {
+    out_pcm.clear();
+    if (ms <= 0) {
+        return;
+    }
+    const std::size_t want_samples =
+        static_cast<std::size_t>((static_cast<int64_t>(ms) * kSampleRate) / 1000);
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::size_t available = rolling_pcm_.size();
+    const std::size_t take = (std::min)(want_samples, available);
+    if (take == 0) {
+        return;
+    }
+    out_pcm.insert(out_pcm.end(), rolling_pcm_.end() - static_cast<std::ptrdiff_t>(take), rolling_pcm_.end());
+}
+
+std::size_t AudioCapture::get_total_captured_samples() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return samples_.size();
+}
+
 #ifdef _WIN32
 void CALLBACK AudioCapture::wave_in_proc(HWAVEIN, UINT msg, DWORD_PTR instance, DWORD_PTR param1, DWORD_PTR) {
     if (msg != WIM_DATA || instance == 0 || param1 == 0) {
@@ -195,6 +219,14 @@ void AudioCapture::on_wave_data(WAVEHDR* header) {
     const auto* begin = reinterpret_cast<const int16_t*>(header->lpData);
     const auto sample_count = static_cast<std::size_t>(header->dwBytesRecorded / sizeof(int16_t));
     samples_.insert(samples_.end(), begin, begin + sample_count);
+    constexpr float kScale = 1.0f / 32768.0f;
+    for (std::size_t i = 0; i < sample_count; ++i) {
+        rolling_pcm_.push_back(static_cast<float>(begin[i]) * kScale);
+    }
+    if (rolling_pcm_.size() > rolling_max_samples_) {
+        const auto erase_count = rolling_pcm_.size() - rolling_max_samples_;
+        rolling_pcm_.erase(rolling_pcm_.begin(), rolling_pcm_.begin() + static_cast<std::ptrdiff_t>(erase_count));
+    }
 
     header->dwBytesRecorded = 0;
     waveInAddBuffer(wave_in_, header, sizeof(*header));
