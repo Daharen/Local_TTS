@@ -42,6 +42,26 @@ std::filesystem::path get_whisper_model_path() {
     return get_app_config().whisper_model_path;
 }
 
+std::filesystem::path get_whisper_cli_path_override() {
+    return get_app_config().whisper_cli_path;
+}
+
+bool is_whisper_gpu_requested() {
+    return get_app_config().whisper_use_gpu;
+}
+
+int get_whisper_gpu_device() {
+    return get_app_config().whisper_gpu_device;
+}
+
+bool is_whisper_flash_attn_enabled() {
+    return get_app_config().whisper_flash_attn;
+}
+
+int get_whisper_threads() {
+    return get_app_config().whisper_threads;
+}
+
 std::filesystem::path get_llama_cpp_root() {
     return get_app_config().llama_cpp_root;
 }
@@ -152,6 +172,11 @@ std::string describe_paths_json() {
         << "  \"large_data_root\": \"" << escape_json(data) << "\",\n"
         << "  \"whisper_cpp_root\": \"" << escape_json(whisper_cpp) << "\",\n"
         << "  \"whisper_model_path\": \"" << escape_json(whisper_model) << "\",\n"
+        << "  \"whisper_cli_path\": \"" << escape_json(get_whisper_cli_path_override().string()) << "\",\n"
+        << "  \"whisper_use_gpu\": " << (is_whisper_gpu_requested() ? "true" : "false") << ",\n"
+        << "  \"whisper_gpu_device\": " << get_whisper_gpu_device() << ",\n"
+        << "  \"whisper_flash_attn\": " << (is_whisper_flash_attn_enabled() ? "true" : "false") << ",\n"
+        << "  \"whisper_threads\": " << get_whisper_threads() << ",\n"
         << "  \"llama_cpp_root\": \"" << escape_json(llama_cpp) << "\",\n"
         << "  \"llama_model_path\": \"" << escape_json(llama_model) << "\",\n"
         << "  \"pipeline_debug_enabled\": " << (is_pipeline_debug_enabled() ? "true" : "false") << ",\n"
