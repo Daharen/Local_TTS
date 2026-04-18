@@ -158,26 +158,6 @@ int get_correction_resident_per_attempt_timeout_ms() {
     return get_app_config().correction_resident_per_attempt_timeout_ms;
 }
 
-bool is_streaming_enabled() {
-    return get_app_config().streaming_enabled;
-}
-
-int get_stream_step_ms() {
-    return get_app_config().stream_step_ms;
-}
-
-int get_stream_length_ms() {
-    return get_app_config().stream_length_ms;
-}
-
-int get_stream_keep_ms() {
-    return get_app_config().stream_keep_ms;
-}
-
-bool is_stream_finalize_on_release_enabled() {
-    return get_app_config().stream_finalize_on_release;
-}
-
 std::string describe_paths_json() {
     const auto repo = get_repo_root().string();
     const auto data = get_large_data_root().string();
@@ -220,12 +200,7 @@ std::string describe_paths_json() {
         << "  \"correction_resident_startup_timeout_ms\": " << get_correction_resident_startup_timeout_ms() << ",\n"
         << "  \"correction_resident_request_timeout_ms\": " << get_correction_resident_request_timeout_ms() << ",\n"
         << "  \"correction_resident_total_budget_ms\": " << get_correction_resident_total_budget_ms() << ",\n"
-        << "  \"correction_resident_per_attempt_timeout_ms\": " << get_correction_resident_per_attempt_timeout_ms() << ",\n"
-        << "  \"streaming_enabled\": " << (is_streaming_enabled() ? "true" : "false") << ",\n"
-        << "  \"stream_step_ms\": " << get_stream_step_ms() << ",\n"
-        << "  \"stream_length_ms\": " << get_stream_length_ms() << ",\n"
-        << "  \"stream_keep_ms\": " << get_stream_keep_ms() << ",\n"
-        << "  \"stream_finalize_on_release\": " << (is_stream_finalize_on_release_enabled() ? "true" : "false") << "\n"
+        << "  \"correction_resident_per_attempt_timeout_ms\": " << get_correction_resident_per_attempt_timeout_ms() << "\n"
         << "}";
     return out.str();
 }

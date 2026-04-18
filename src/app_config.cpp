@@ -288,31 +288,6 @@ void apply_config_json(AppConfig& config, const std::string& json) {
     if (!correction_force_segmentation_threshold_chars.empty()) {
         config.correction_force_segmentation_threshold_chars = parse_int_value(correction_force_segmentation_threshold_chars, config.correction_force_segmentation_threshold_chars);
     }
-
-    const auto streaming_enabled = find_json_value_token(json, "streaming_enabled");
-    if (!streaming_enabled.empty()) {
-        config.streaming_enabled = parse_bool_value(streaming_enabled, config.streaming_enabled);
-    }
-
-    const auto stream_step_ms = find_json_value_token(json, "stream_step_ms");
-    if (!stream_step_ms.empty()) {
-        config.stream_step_ms = parse_int_value(stream_step_ms, config.stream_step_ms);
-    }
-
-    const auto stream_length_ms = find_json_value_token(json, "stream_length_ms");
-    if (!stream_length_ms.empty()) {
-        config.stream_length_ms = parse_int_value(stream_length_ms, config.stream_length_ms);
-    }
-
-    const auto stream_keep_ms = find_json_value_token(json, "stream_keep_ms");
-    if (!stream_keep_ms.empty()) {
-        config.stream_keep_ms = parse_int_value(stream_keep_ms, config.stream_keep_ms);
-    }
-
-    const auto stream_finalize_on_release = find_json_value_token(json, "stream_finalize_on_release");
-    if (!stream_finalize_on_release.empty()) {
-        config.stream_finalize_on_release = parse_bool_value(stream_finalize_on_release, config.stream_finalize_on_release);
-    }
 }
 
 void apply_environment_overrides(AppConfig& config) {
@@ -442,21 +417,6 @@ void apply_environment_overrides(AppConfig& config) {
     if (const char* env = std::getenv("LOCAL_TTS_CORRECTION_FORCE_SEGMENTATION_THRESHOLD_CHARS")) {
         config.correction_force_segmentation_threshold_chars = parse_int_value(trim_copy(env), config.correction_force_segmentation_threshold_chars);
     }
-    if (const char* env = std::getenv("LOCAL_TTS_STREAMING_ENABLED")) {
-        config.streaming_enabled = parse_bool_value(trim_copy(env), config.streaming_enabled);
-    }
-    if (const char* env = std::getenv("LOCAL_TTS_STREAM_STEP_MS")) {
-        config.stream_step_ms = parse_int_value(trim_copy(env), config.stream_step_ms);
-    }
-    if (const char* env = std::getenv("LOCAL_TTS_STREAM_LENGTH_MS")) {
-        config.stream_length_ms = parse_int_value(trim_copy(env), config.stream_length_ms);
-    }
-    if (const char* env = std::getenv("LOCAL_TTS_STREAM_KEEP_MS")) {
-        config.stream_keep_ms = parse_int_value(trim_copy(env), config.stream_keep_ms);
-    }
-    if (const char* env = std::getenv("LOCAL_TTS_STREAM_FINALIZE_ON_RELEASE")) {
-        config.stream_finalize_on_release = parse_bool_value(trim_copy(env), config.stream_finalize_on_release);
-    }
 }
 
 AppConfig make_default_config() {
@@ -496,11 +456,6 @@ AppConfig make_default_config() {
     config.correction_segment_max_chars = 1600;
     config.correction_segment_overlap_chars = 200;
     config.correction_force_segmentation_threshold_chars = 1800;
-    config.streaming_enabled = true;
-    config.stream_step_ms = 1200;
-    config.stream_length_ms = 6000;
-    config.stream_keep_ms = 250;
-    config.stream_finalize_on_release = true;
 
     return config;
 }

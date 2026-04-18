@@ -25,10 +25,5 @@
   "correction_max_output_tokens": 512,
   "correction_segment_max_chars": 1600,
   "correction_segment_overlap_chars": 200,
-  "correction_force_segmentation_threshold_chars": 1800,
-  "streaming_enabled": true,
-  "stream_step_ms": 1200,
-  "stream_length_ms": 6000,
-  "stream_keep_ms": 250,
-  "stream_finalize_on_release": true
+  "correction_force_segmentation_threshold_chars": 1800
 }

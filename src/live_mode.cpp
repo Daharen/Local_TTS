@@ -6,7 +6,6 @@
 #include "llm_correction.h"
 #include "pipeline_debug.h"
 #include "paths.h"
-#include "streaming_dictation.h"
 #include "text_injection.h"
 #include "whisper_runner.h"
 
@@ -18,7 +17,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -194,15 +192,6 @@ private:
         int whisper_text_words = 0;
         int llm_output_chars = 0;
         int llm_output_words = 0;
-        bool streaming_enabled = false;
-        int stream_decode_iterations = 0;
-        int stream_step_ms = 0;
-        int stream_length_ms = 0;
-        int stream_keep_ms = 0;
-        int latest_partial_chars = 0;
-        bool finalization_used_partial_fallback = false;
-        int64_t stream_first_partial_ms = -1;
-        double stream_final_infer_ms = 0.0;
     };
 
     void debug_line(const std::string& line, bool as_error = false) const {
@@ -323,17 +312,6 @@ private:
             return;
         }
         recording_ = true;
-        streaming_enabled_for_session_ = is_streaming_enabled();
-        if (streaming_enabled_for_session_) {
-            stream_session_ = std::make_unique<StreamingDictationSession>(capture_);
-            if (!stream_session_->start(session_id_)) {
-                debug_line("[STREAM_BEGIN] failed_to_start", true);
-                streaming_enabled_for_session_ = false;
-                stream_session_.reset();
-            }
-        } else {
-            stream_session_.reset();
-        }
         MessageBeep(MB_OK);
         set_state(L"Recording");
         debug_line("[CAPTURE_START]");
@@ -365,39 +343,7 @@ private:
             log.correction_mode = normalize_mode_label(get_correction_mode());
             log.correction_max_output_tokens = get_correction_max_output_tokens();
             log.wav_path = wav_path.string();
-            log.streaming_enabled = streaming_enabled_for_session_;
-            log.stream_step_ms = get_stream_step_ms();
-            log.stream_length_ms = get_stream_length_ms();
-            log.stream_keep_ms = get_stream_keep_ms();
             debug_line("[WAV_PATH] " + log.wav_path);
-
-            StreamingDictationResult stream_result;
-            if (streaming_enabled_for_session_ && stream_session_) {
-                stream_result = stream_session_->finalize();
-                log.stream_decode_iterations = stream_result.decode_iteration_count;
-                log.latest_partial_chars = stream_result.latest_partial_chars;
-                log.finalization_used_partial_fallback = stream_result.used_partial_fallback;
-                log.stream_first_partial_ms = stream_result.stream_first_partial_ms;
-                log.stream_final_infer_ms = stream_result.stream_final_infer_ms;
-                if (stream_result.finalized) {
-                    log.raw_transcript = stream_result.final_text;
-                } else if (!stream_result.error.empty()) {
-                    log.transcribe_error = stream_result.error;
-                }
-
-                debug_line("[STREAMING_ENABLED] true");
-                debug_line("[STREAM_DECODE_ITERATIONS] " + std::to_string(log.stream_decode_iterations));
-                debug_line("[STREAM_STEP_MS] " + std::to_string(log.stream_step_ms));
-                debug_line("[STREAM_LENGTH_MS] " + std::to_string(log.stream_length_ms));
-                debug_line("[STREAM_KEEP_MS] " + std::to_string(log.stream_keep_ms));
-                debug_line("[STREAM_LATEST_PARTIAL_CHARS] " + std::to_string(log.latest_partial_chars));
-                debug_line(std::string("[STREAM_FINALIZATION_USED_PARTIAL_FALLBACK] ") +
-                           (log.finalization_used_partial_fallback ? "true" : "false"));
-                debug_line("[STREAM_FIRST_PARTIAL_MS] " + std::to_string(log.stream_first_partial_ms));
-                debug_line("[STREAM_FINAL_INFER_MS] " + std::to_string(log.stream_final_infer_ms));
-            } else {
-                debug_line("[STREAMING_ENABLED] false");
-            }
 
             diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::WavWrite, "write wav");
             if (!capture_.write_wav(wav_path)) {
@@ -416,20 +362,7 @@ private:
                                       true);
                 diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Whisper, "whisper begin");
                 WhisperRunInfo whisper_info;
-                if (log.raw_transcript.empty()) {
-                    transcribe_file_to_string_with_info(wav_path, log.raw_transcript, log.transcribe_error, &whisper_info);
-                } else {
-                    whisper_info.resolved_whisper_executable = "in_process_resident";
-                    whisper_info.resolved_model_path = get_whisper_model_path().string();
-                    whisper_info.argument_excerpt = "streaming_finalized=true";
-                    whisper_info.backend_summary = "in_process_streaming_final";
-                    whisper_info.exit_code = 0;
-                    whisper_info.gpu_requested = is_whisper_gpu_requested();
-                    whisper_info.gpu_active = is_whisper_gpu_requested();
-                    whisper_info.infer_ms = log.stream_final_infer_ms;
-                    whisper_info.total_ms = log.stream_final_infer_ms;
-                    whisper_info.timing_excerpt = "stream_final_infer_ms=" + std::to_string(log.stream_final_infer_ms);
-                }
+                transcribe_file_to_string_with_info(wav_path, log.raw_transcript, log.transcribe_error, &whisper_info);
                 log.whisper_exe = whisper_info.resolved_whisper_executable;
                 log.whisper_args = whisper_info.argument_excerpt;
                 log.whisper_gpu_requested = whisper_info.gpu_requested;
@@ -832,15 +765,6 @@ private:
         out << "[TIMESTAMP] " << now_stamp_readable() << "\n";
         out << "[WAV_PATH] " << log.wav_path << "\n";
         out << "[CORRECTION_ENABLED] " << (log.correction_enabled ? "true" : "false") << "\n";
-        out << "[STREAMING_ENABLED] " << (log.streaming_enabled ? "true" : "false") << "\n";
-        out << "[STREAM_DECODE_ITERATIONS] " << log.stream_decode_iterations << "\n";
-        out << "[STREAM_STEP_MS] " << log.stream_step_ms << "\n";
-        out << "[STREAM_LENGTH_MS] " << log.stream_length_ms << "\n";
-        out << "[STREAM_KEEP_MS] " << log.stream_keep_ms << "\n";
-        out << "[STREAM_LATEST_PARTIAL_CHARS] " << log.latest_partial_chars << "\n";
-        out << "[STREAM_FINALIZATION_USED_PARTIAL_FALLBACK] " << (log.finalization_used_partial_fallback ? "true" : "false") << "\n";
-        out << "[STREAM_FIRST_PARTIAL_MS] " << log.stream_first_partial_ms << "\n";
-        out << "[STREAM_FINAL_INFER_MS] " << log.stream_final_infer_ms << "\n";
         out << "[CORRECTION_MODE] " << log.correction_mode << "\n";
         out << "[CORRECTION_SEGMENTED] " << (log.correction_segmented ? "true" : "false") << "\n";
         out << "[CORRECTION_SEGMENT_COUNT] " << log.correction_segment_count << "\n";
@@ -961,8 +885,6 @@ private:
         if (worker_.joinable()) {
             worker_.join();
         }
-        stream_session_.reset();
-        streaming_enabled_for_session_ = false;
         transcribing_.store(false);
         if (!shutting_down_) {
             set_state(L"Idle");
@@ -1057,10 +979,6 @@ private:
             recording_ = false;
             capture_.stop();
         }
-        if (recording_ && stream_session_) {
-            stream_session_->stop_without_finalize();
-            stream_session_.reset();
-        }
         if (worker_.joinable()) {
             worker_.join();
             transcribing_.store(false);
@@ -1077,10 +995,6 @@ private:
         if (worker_.joinable()) {
             worker_.join();
         }
-        if (stream_session_) {
-            stream_session_->stop_without_finalize();
-            stream_session_.reset();
-        }
         if (prewarm_thread_.joinable()) {
             prewarm_thread_.join();
         }
@@ -1095,13 +1009,11 @@ private:
     std::thread worker_;
     std::thread prewarm_thread_;
     AudioCapture capture_;
-    std::unique_ptr<StreamingDictationSession> stream_session_;
     NOTIFYICONDATAW tray_icon_{};
     std::wstring state_text_ = L"Idle";
     std::atomic<bool> transcribing_{false};
     bool recording_ = false;
     bool shutting_down_ = false;
-    bool streaming_enabled_for_session_ = false;
     std::atomic<bool> prewarm_started_{false};
     bool debug_console_ = false;
     uint64_t session_id_ = 0;
