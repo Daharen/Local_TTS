@@ -41,8 +41,4 @@ int get_stream_step_ms();
 int get_stream_length_ms();
 int get_stream_keep_ms();
 bool is_stream_finalize_on_release_enabled();
-int get_stream_local_agreement_n();
-int get_stream_prompt_max_tokens();
-int get_stream_trim_guard_ms();
-bool is_stream_trim_on_segment_boundary_enabled();
 std::string describe_paths_json();
