@@ -141,6 +141,31 @@ void apply_config_json(AppConfig& config, const std::string& json) {
         config.whisper_model_path = whisper_model_path;
     }
 
+    const auto whisper_cli_path = find_json_value_token(json, "whisper_cli_path");
+    if (!whisper_cli_path.empty()) {
+        config.whisper_cli_path = whisper_cli_path;
+    }
+
+    const auto whisper_use_gpu = find_json_value_token(json, "whisper_use_gpu");
+    if (!whisper_use_gpu.empty()) {
+        config.whisper_use_gpu = parse_bool_value(whisper_use_gpu, config.whisper_use_gpu);
+    }
+
+    const auto whisper_gpu_device = find_json_value_token(json, "whisper_gpu_device");
+    if (!whisper_gpu_device.empty()) {
+        config.whisper_gpu_device = parse_int_value(whisper_gpu_device, config.whisper_gpu_device);
+    }
+
+    const auto whisper_flash_attn = find_json_value_token(json, "whisper_flash_attn");
+    if (!whisper_flash_attn.empty()) {
+        config.whisper_flash_attn = parse_bool_value(whisper_flash_attn, config.whisper_flash_attn);
+    }
+
+    const auto whisper_threads = find_json_value_token(json, "whisper_threads");
+    if (!whisper_threads.empty()) {
+        config.whisper_threads = parse_int_value(whisper_threads, config.whisper_threads);
+    }
+
     const auto llama_cpp_root = find_json_value_token(json, "llama_cpp_root");
     if (!llama_cpp_root.empty()) {
         config.llama_cpp_root = llama_cpp_root;
@@ -284,6 +309,24 @@ void apply_environment_overrides(AppConfig& config) {
             config.whisper_model_path = value;
         }
     }
+    if (const char* env = std::getenv("LOCAL_TTS_WHISPER_CLI_PATH")) {
+        const auto value = trim_copy(env);
+        if (!value.empty()) {
+            config.whisper_cli_path = value;
+        }
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_WHISPER_USE_GPU")) {
+        config.whisper_use_gpu = parse_bool_value(trim_copy(env), config.whisper_use_gpu);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_WHISPER_GPU_DEVICE")) {
+        config.whisper_gpu_device = parse_int_value(trim_copy(env), config.whisper_gpu_device);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_WHISPER_FLASH_ATTN")) {
+        config.whisper_flash_attn = parse_bool_value(trim_copy(env), config.whisper_flash_attn);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_WHISPER_THREADS")) {
+        config.whisper_threads = parse_int_value(trim_copy(env), config.whisper_threads);
+    }
     if (const char* env = std::getenv("LOCAL_TTS_LLAMA_CPP_ROOT")) {
         const auto value = trim_copy(env);
         if (!value.empty()) {
@@ -383,6 +426,11 @@ AppConfig make_default_config() {
     config.large_data_root = large_data_root;
     config.whisper_cpp_root = large_data_root / "external" / "whisper.cpp";
     config.whisper_model_path = large_data_root / "models" / "whisper.cpp" / "ggml-base.en.bin";
+    config.whisper_cli_path.clear();
+    config.whisper_use_gpu = true;
+    config.whisper_gpu_device = 0;
+    config.whisper_flash_attn = false;
+    config.whisper_threads = 0;
     config.llama_cpp_root = R"(F:\Qwen3.5-27B\llama.cpp)";
     config.llama_model_path = R"(F:\Qwen3.5-27B\small-model-3b\Qwen2.5-3B-Instruct-IQ4_XS.gguf)";
     config.pipeline_debug_enabled = false;
