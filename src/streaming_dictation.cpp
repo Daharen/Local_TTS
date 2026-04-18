@@ -6,8 +6,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
-#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -30,20 +28,6 @@ struct OverlapResult {
     bool match_ok = false;
     std::size_t overlap_tokens = 0;
     std::size_t promoted_prefix_tokens = 0;
-    std::size_t effective_overlap_tokens = 0;
-    std::size_t edge_mismatches = 0;
-    bool interior_mismatch = false;
-    bool used_edge_softmatch = false;
-    int shift_tokens = 0;
-    bool anchor_used = false;
-    std::size_t anchor_ngram_tokens = 0;
-    std::size_t min_required_tokens = 0;
-    std::size_t max_overlap_tokens_tried = 0;
-    int first_interior_mismatch_index = -1;
-    std::size_t reject_edge_mismatches = 0;
-    std::string reject_prev_edge_token;
-    std::string reject_curr_edge_token;
-    std::string match_mode = "replace_window";
 };
 
 std::string collapse_whitespace(std::string text) {
@@ -131,192 +115,7 @@ std::size_t best_suffix_prefix_overlap_tokens(const std::vector<TokenData>& prev
 std::size_t min_required_overlap_tokens(std::size_t prev_count, std::size_t curr_count) {
     const std::size_t shorter = (std::min)(prev_count, curr_count);
     const std::size_t pct_requirement = (shorter + 4) / 5;  // ceil(20%)
-    return (std::max<std::size_t>)(4, pct_requirement);
-}
-
-bool is_edge_position(std::size_t index, std::size_t overlap_len) {
-    return overlap_len > 0 && (index == 0 || index + 1 == overlap_len);
-}
-
-bool is_edge_soft_match_token(const std::string& left, const std::string& right) {
-    if (left == right) {
-        return true;
-    }
-
-    const std::size_t left_len = left.size();
-    const std::size_t right_len = right.size();
-    const std::size_t min_len = (std::min)(left_len, right_len);
-
-    if (min_len >= 3) {
-        if (left_len <= right_len && right.rfind(left, 0) == 0) {
-            return true;
-        }
-        if (right_len <= left_len && left.rfind(right, 0) == 0) {
-            return true;
-        }
-    }
-
-    const std::size_t short_len_limit = 3;
-    if ((left.empty() && right_len <= short_len_limit) || (right.empty() && left_len <= short_len_limit)) {
-        return true;
-    }
-
-    return false;
-}
-
-std::size_t largest_anchor_ngram_len(const std::vector<TokenData>& prev_tokens,
-                                     const std::vector<TokenData>& curr_tokens,
-                                     std::size_t prev_start,
-                                     std::size_t curr_start,
-                                     std::size_t overlap_len) {
-    if (overlap_len < 3) {
-        return 0;
-    }
-
-    const std::size_t interior_start = (overlap_len > 2) ? 1 : 0;
-    const std::size_t interior_end = (overlap_len > 2) ? overlap_len - 1 : overlap_len;
-    if (interior_end <= interior_start) {
-        return 0;
-    }
-
-    for (std::size_t n : {std::size_t(4), std::size_t(3)}) {
-        if ((interior_end - interior_start) < n) {
-            continue;
-        }
-        for (std::size_t i = interior_start; i + n <= interior_end; ++i) {
-            bool exact = true;
-            for (std::size_t j = 0; j < n; ++j) {
-                if (prev_tokens[prev_start + i + j].normalized != curr_tokens[curr_start + i + j].normalized) {
-                    exact = false;
-                    break;
-                }
-            }
-            if (exact) {
-                return n;
-            }
-        }
-    }
-    return 0;
-}
-
-std::vector<int> overlap_shift_candidates() {
-    return {0, -1, 1, -2, 2};
-}
-
-OverlapResult score_best_overlap(const std::vector<TokenData>& prev_tokens, const std::vector<TokenData>& curr_tokens) {
-    OverlapResult best;
-    const std::size_t max_overlap = (std::min)(prev_tokens.size(), curr_tokens.size());
-    const std::size_t min_overlap = min_required_overlap_tokens(prev_tokens.size(), curr_tokens.size());
-    best.min_required_tokens = min_overlap;
-    best.max_overlap_tokens_tried = max_overlap;
-    int first_interior_mismatch_index = std::numeric_limits<int>::max();
-    std::size_t reject_edge_mismatches = 0;
-    std::string reject_prev_edge_token;
-    std::string reject_curr_edge_token;
-
-    for (std::size_t k = max_overlap; k >= min_overlap && k > 0; --k) {
-        const std::size_t prev_base = prev_tokens.size() - k;
-        for (int shift : overlap_shift_candidates()) {
-            const std::size_t shift_abs = static_cast<std::size_t>(std::abs(shift));
-            if (shift_abs >= k) {
-                continue;
-            }
-
-            const std::size_t effective_k = k - shift_abs;
-            if (effective_k < min_overlap) {
-                continue;
-            }
-
-            const std::size_t prev_shift = (shift > 0) ? static_cast<std::size_t>(shift) : 0;
-            const std::size_t curr_shift = (shift < 0) ? static_cast<std::size_t>(-shift) : 0;
-            const std::size_t prev_start = prev_base + prev_shift;
-            const std::size_t curr_start = curr_shift;
-
-            bool interior_mismatch = false;
-            std::size_t edge_mismatches = 0;
-            bool used_edge_softmatch = false;
-            bool reject = false;
-            bool all_exact = (shift == 0);
-
-            for (std::size_t i = 0; i < effective_k; ++i) {
-                const std::string& prev_norm = prev_tokens[prev_start + i].normalized;
-                const std::string& curr_norm = curr_tokens[curr_start + i].normalized;
-                if (prev_norm == curr_norm) {
-                    continue;
-                }
-
-                all_exact = false;
-                if (!is_edge_position(i, effective_k)) {
-                    interior_mismatch = true;
-                    reject = true;
-                    if (static_cast<int>(i) < first_interior_mismatch_index) {
-                        first_interior_mismatch_index = static_cast<int>(i);
-                    }
-                    break;
-                }
-
-                const bool soft_match = is_edge_soft_match_token(prev_norm, curr_norm);
-                if (!soft_match) {
-                    ++edge_mismatches;
-                    reject_edge_mismatches = edge_mismatches;
-                    reject_prev_edge_token = prev_tokens[prev_start + i].original;
-                    reject_curr_edge_token = curr_tokens[curr_start + i].original;
-                    if (edge_mismatches > 2) {
-                        reject = true;
-                        break;
-                    }
-                } else {
-                    used_edge_softmatch = true;
-                }
-            }
-
-            if (reject || interior_mismatch) {
-                continue;
-            }
-
-            const std::size_t anchor_len = largest_anchor_ngram_len(prev_tokens, curr_tokens, prev_start, curr_start, effective_k);
-            const bool anchor_used = anchor_len >= 3;
-            const bool exact_mode = all_exact && edge_mismatches == 0 && !used_edge_softmatch;
-            if (!exact_mode && !anchor_used) {
-                continue;
-            }
-
-            best.match_ok = true;
-            best.overlap_tokens = k;
-            best.effective_overlap_tokens = effective_k;
-            best.promoted_prefix_tokens = prev_start;
-            best.edge_mismatches = edge_mismatches;
-            best.interior_mismatch = false;
-            best.used_edge_softmatch = used_edge_softmatch;
-            best.shift_tokens = shift;
-            best.anchor_used = anchor_used;
-            best.anchor_ngram_tokens = anchor_len;
-            best.first_interior_mismatch_index = -1;
-            best.reject_edge_mismatches = 0;
-            best.reject_prev_edge_token.clear();
-            best.reject_curr_edge_token.clear();
-            best.match_mode = exact_mode ? "exact" : "edge_tolerant";
-            return best;
-        }
-    }
-
-    best.match_ok = false;
-    best.overlap_tokens = 0;
-    best.promoted_prefix_tokens = 0;
-    best.effective_overlap_tokens = 0;
-    best.edge_mismatches = 0;
-    best.interior_mismatch = (first_interior_mismatch_index != std::numeric_limits<int>::max());
-    best.used_edge_softmatch = false;
-    best.shift_tokens = 0;
-    best.anchor_used = false;
-    best.anchor_ngram_tokens = 0;
-    best.first_interior_mismatch_index =
-        (first_interior_mismatch_index == std::numeric_limits<int>::max()) ? -1 : first_interior_mismatch_index;
-    best.reject_edge_mismatches = reject_edge_mismatches;
-    best.reject_prev_edge_token = reject_prev_edge_token;
-    best.reject_curr_edge_token = reject_curr_edge_token;
-    best.match_mode = "replace_window";
-    return best;
+    return (std::max<std::size_t>)(3, pct_requirement);
 }
 
 OverlapResult promote_window_prefix(std::string& committed_prefix_text,
@@ -335,11 +134,15 @@ OverlapResult promote_window_prefix(std::string& committed_prefix_text,
         return result;
     }
 
-    result = score_best_overlap(prev_tokens, curr_tokens);
-    if (!result.match_ok) {
+    const std::size_t best_overlap = best_suffix_prefix_overlap_tokens(prev_tokens, curr_tokens);
+    const std::size_t min_overlap = min_required_overlap_tokens(prev_tokens.size(), curr_tokens.size());
+    if (best_overlap < min_overlap) {
         return result;
     }
 
+    result.match_ok = true;
+    result.overlap_tokens = best_overlap;
+    result.promoted_prefix_tokens = prev_tokens.size() - best_overlap;
     const std::string promoted_prefix = join_token_range(prev_tokens, 0, result.promoted_prefix_tokens);
     if (!promoted_prefix.empty()) {
         if (!committed_prefix_text.empty()) {
@@ -478,41 +281,13 @@ void StreamingDictationSession::worker_loop() {
             }
             bool overlap_match_ok = false;
             std::size_t overlap_tokens = 0;
-            std::size_t overlap_effective_tokens = 0;
             std::size_t promoted_prefix_tokens = 0;
-            std::size_t overlap_edge_mismatches = 0;
-            bool overlap_interior_mismatch = false;
-            bool overlap_edge_softmatch = false;
-            int overlap_shift_tokens = 0;
-            bool overlap_anchor_used = false;
-            std::size_t overlap_anchor_tokens = 0;
-            std::size_t overlap_min_required_tokens = 0;
-            std::size_t overlap_max_tried_tokens = 0;
-            int overlap_first_interior_mismatch_index = -1;
-            std::size_t overlap_reject_edge_mismatches = 0;
-            std::string overlap_reject_prev_edge_token;
-            std::string overlap_reject_curr_edge_token;
-            std::string overlap_match_mode = "replace_window";
             if (!previous_window_text_.empty()) {
                 OverlapResult overlap_result =
                     promote_window_prefix(committed_prefix_text_, previous_window_text_, current_window_text);
                 overlap_match_ok = overlap_result.match_ok;
                 overlap_tokens = overlap_result.overlap_tokens;
-                overlap_effective_tokens = overlap_result.effective_overlap_tokens;
                 promoted_prefix_tokens = overlap_result.promoted_prefix_tokens;
-                overlap_edge_mismatches = overlap_result.edge_mismatches;
-                overlap_interior_mismatch = overlap_result.interior_mismatch;
-                overlap_edge_softmatch = overlap_result.used_edge_softmatch;
-                overlap_shift_tokens = overlap_result.shift_tokens;
-                overlap_anchor_used = overlap_result.anchor_used;
-                overlap_anchor_tokens = overlap_result.anchor_ngram_tokens;
-                overlap_min_required_tokens = overlap_result.min_required_tokens;
-                overlap_max_tried_tokens = overlap_result.max_overlap_tokens_tried;
-                overlap_first_interior_mismatch_index = overlap_result.first_interior_mismatch_index;
-                overlap_reject_edge_mismatches = overlap_result.reject_edge_mismatches;
-                overlap_reject_prev_edge_token = overlap_result.reject_prev_edge_token;
-                overlap_reject_curr_edge_token = overlap_result.reject_curr_edge_token;
-                overlap_match_mode = overlap_result.match_mode;
                 if (!overlap_match_ok) {
                     ++overlap_failure_count_;
                     const std::string prev_clean = collapse_whitespace(previous_window_text_);
@@ -521,15 +296,6 @@ void StreamingDictationSession::worker_loop() {
                     latest_window_text_ = (curr_tokens.size() >= prev_tokens.size()) ? current_window_text : prev_clean;
                     pipeline_debug::log("streaming",
                                         "[STREAM_OVERLAP_WARNING] match=false action=replace_window_without_append",
-                                        true);
-                    pipeline_debug::log("streaming",
-                                        "[STREAM_OVERLAP_REJECT_DETAIL] min_required=" +
-                                            std::to_string(overlap_min_required_tokens) +
-                                            " max_tried=" + std::to_string(overlap_max_tried_tokens) +
-                                            " first_interior_idx=" + std::to_string(overlap_first_interior_mismatch_index) +
-                                            " edge_mismatches=" + std::to_string(overlap_reject_edge_mismatches) +
-                                            " prev_edge_token=\"" + overlap_reject_prev_edge_token +
-                                            "\" curr_edge_token=\"" + overlap_reject_curr_edge_token + "\"",
                                         true);
                 } else {
                     latest_window_text_ = current_window_text;
@@ -547,16 +313,6 @@ void StreamingDictationSession::worker_loop() {
             pipeline_debug::log("streaming", "[STREAM_PARTIAL_TEXT] chars=" + std::to_string(latest_partial_text_.size()));
             pipeline_debug::log("streaming", "[STREAM_OVERLAP_MATCH_OK] " + std::string(overlap_match_ok ? "true" : "false"));
             pipeline_debug::log("streaming", "[STREAM_OVERLAP_TOKENS] n=" + std::to_string(overlap_tokens));
-            pipeline_debug::log("streaming", "[STREAM_OVERLAP_EFFECTIVE_TOKENS] n=" + std::to_string(overlap_effective_tokens));
-            pipeline_debug::log("streaming", "[STREAM_OVERLAP_EDGE_MISMATCHES] n=" + std::to_string(overlap_edge_mismatches));
-            pipeline_debug::log("streaming",
-                                "[STREAM_OVERLAP_INTERIOR_MISMATCH] " +
-                                    std::string(overlap_interior_mismatch ? "true" : "false"));
-            pipeline_debug::log("streaming", "[STREAM_OVERLAP_EDGE_SOFTMATCH] " + std::string(overlap_edge_softmatch ? "true" : "false"));
-            pipeline_debug::log("streaming", "[STREAM_OVERLAP_SHIFT] n=" + std::to_string(overlap_shift_tokens));
-            pipeline_debug::log("streaming", "[STREAM_OVERLAP_ANCHOR_USED] " + std::string(overlap_anchor_used ? "true" : "false"));
-            pipeline_debug::log("streaming", "[STREAM_OVERLAP_ANCHOR_N] n=" + std::to_string(overlap_anchor_tokens));
-            pipeline_debug::log("streaming", "[STREAM_OVERLAP_MATCH_MODE] " + overlap_match_mode);
             pipeline_debug::log("streaming", "[STREAM_PROMOTED_PREFIX_TOKENS] n=" + std::to_string(promoted_prefix_tokens));
             pipeline_debug::log("streaming", "[STREAM_COMMITTED_PREFIX_CHARS] " + std::to_string(committed_prefix_text_.size()));
             pipeline_debug::log("streaming", "[STREAM_WINDOW_CHARS] " + std::to_string(latest_window_text_.size()));
