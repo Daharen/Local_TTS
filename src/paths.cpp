@@ -178,6 +178,22 @@ bool is_stream_finalize_on_release_enabled() {
     return get_app_config().stream_finalize_on_release;
 }
 
+int get_stream_local_agreement_n() {
+    return get_app_config().stream_local_agreement_n;
+}
+
+int get_stream_prompt_max_tokens() {
+    return get_app_config().stream_prompt_max_tokens;
+}
+
+int get_stream_trim_guard_ms() {
+    return get_app_config().stream_trim_guard_ms;
+}
+
+bool is_stream_trim_on_segment_boundary_enabled() {
+    return get_app_config().stream_trim_on_segment_boundary;
+}
+
 std::string describe_paths_json() {
     const auto repo = get_repo_root().string();
     const auto data = get_large_data_root().string();
@@ -225,7 +241,12 @@ std::string describe_paths_json() {
         << "  \"stream_step_ms\": " << get_stream_step_ms() << ",\n"
         << "  \"stream_length_ms\": " << get_stream_length_ms() << ",\n"
         << "  \"stream_keep_ms\": " << get_stream_keep_ms() << ",\n"
-        << "  \"stream_finalize_on_release\": " << (is_stream_finalize_on_release_enabled() ? "true" : "false") << "\n"
+        << "  \"stream_finalize_on_release\": " << (is_stream_finalize_on_release_enabled() ? "true" : "false") << ",\n"
+        << "  \"stream_local_agreement_n\": " << get_stream_local_agreement_n() << ",\n"
+        << "  \"stream_prompt_max_tokens\": " << get_stream_prompt_max_tokens() << ",\n"
+        << "  \"stream_trim_guard_ms\": " << get_stream_trim_guard_ms() << ",\n"
+        << "  \"stream_trim_on_segment_boundary\": " << (is_stream_trim_on_segment_boundary_enabled() ? "true" : "false")
+        << "\n"
         << "}";
     return out.str();
 }
