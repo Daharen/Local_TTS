@@ -12,13 +12,9 @@
 
 class AudioCapture {
 public:
-    static constexpr int kSampleRate = 16000;
-
     bool start();
     bool stop();
     bool write_wav(const std::filesystem::path& wav_path) const;
-    void get_latest_pcm_ms(int ms, std::vector<float>& out_pcm) const;
-    std::size_t get_total_captured_samples() const;
     void cleanup();
 
 private:
@@ -33,7 +29,5 @@ private:
 
     mutable std::mutex mutex_;
     std::vector<int16_t> samples_;
-    std::vector<float> rolling_pcm_;
-    std::size_t rolling_max_samples_ = static_cast<std::size_t>(kSampleRate) * 30;
     bool running_ = false;
 };

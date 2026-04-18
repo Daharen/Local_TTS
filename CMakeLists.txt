@@ -61,7 +61,6 @@ set(LOCAL_TTS_SOURCES
     src/text_injection.cpp
     src/llm_correction.cpp
     src/pipeline_debug.cpp
-    src/streaming_dictation.cpp
 )
 
 if(LOCAL_TTS_ENABLE_DASHBOARD)
