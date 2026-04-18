@@ -230,13 +230,19 @@ bool load_wav_pcm16_mono_16khz(const std::filesystem::path& audio_path, WavData&
     return true;
 }
 
-std::string build_profile_excerpt(bool use_gpu, int gpu_device, bool flash_attn, int threads) {
+std::string build_profile_excerpt(
+    bool use_gpu, int gpu_device, bool flash_attn, int threads, const WhisperDecodeOptions& options) {
     std::ostringstream out;
     out << "in_process use_gpu=" << (use_gpu ? "true" : "false")
         << " gpu_device=" << gpu_device
         << " flash_attn=" << (flash_attn ? "true" : "false")
         << " threads=" << threads
-        << " sampling=greedy single_segment=true no_timestamps=true temp_inc=0";
+        << " sampling=greedy single_segment=" << (options.single_segment ? "true" : "false")
+        << " no_timestamps=" << (options.enable_timestamps ? "false" : "true")
+        << " no_context=" << (options.no_context ? "true" : "false")
+        << " prompt_tokens=" << options.prompt_token_count
+        << " max_tokens=" << options.max_tokens
+        << " temp_inc=0";
     return out.str();
 }
 
@@ -305,13 +311,31 @@ std::string summarize_timings(double init_ms, double wav_ms, double infer_ms, do
     return out.str();
 }
 
+std::vector<int> tokenize_text_for_prompt(whisper_context* ctx, const std::string& text, int max_tokens = 2048) {
+    if (ctx == nullptr || text.empty() || max_tokens <= 0) {
+        return {};
+    }
+    std::vector<whisper_token> temp(static_cast<std::size_t>(max_tokens));
+    const int n = whisper_tokenize(ctx, text.c_str(), temp.data(), max_tokens);
+    if (n <= 0) {
+        return {};
+    }
+    std::vector<int> out;
+    out.reserve(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        out.push_back(static_cast<int>(temp[static_cast<std::size_t>(i)]));
+    }
+    return out;
+}
+
 bool transcribe_pcm_locked_with_info(
     ResidentWhisperState& state,
     const std::filesystem::path& model_path,
     const float* pcm,
     int pcm_sample_count,
     double wav_ms,
-    std::string& text_out,
+    const WhisperDecodeOptions& options,
+    WhisperDecodeResult& result_out,
     std::string& error_out,
     WhisperRunInfo& info,
     const Clock::time_point& total_start) {
@@ -323,7 +347,7 @@ bool transcribe_pcm_locked_with_info(
     bool init_reused = false;
     double init_ms = 0.0;
     if (!ensure_resident_context(state, model_path, use_gpu, gpu_device, flash_attn, threads, init_reused, init_ms, error_out)) {
-        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads, options);
         info.backend_summary = "resident_init_failed";
         info.stderr_excerpt = clip_excerpt(error_out);
         info.exit_code = 1;
@@ -343,15 +367,16 @@ bool transcribe_pcm_locked_with_info(
     wparams.print_realtime = false;
     wparams.print_timestamps = false;
     wparams.translate = false;
-    wparams.no_timestamps = true;
-    wparams.single_segment = true;
+    wparams.no_timestamps = !options.enable_timestamps;
+    wparams.single_segment = options.single_segment;
     wparams.language = "en";
     wparams.n_threads = threads;
-    wparams.prompt_tokens = nullptr;
-    wparams.prompt_n_tokens = 0;
+    wparams.prompt_tokens = options.prompt_tokens;
+    wparams.prompt_n_tokens = options.prompt_token_count;
+    wparams.n_max_text_ctx = options.max_tokens > 0 ? options.max_tokens : wparams.n_max_text_ctx;
     wparams.temperature_inc = 0.0f;
     if constexpr (has_no_context_field<whisper_full_params>::value) {
-        wparams.no_context = true;
+        wparams.no_context = options.no_context;
     }
 
     const auto infer_start = Clock::now();
@@ -360,7 +385,7 @@ bool transcribe_pcm_locked_with_info(
 
     if (infer_rc != 0) {
         error_out = "whisper_full failed with status: " + std::to_string(infer_rc);
-        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads, options);
         info.backend_summary = "infer_failed";
         info.stderr_excerpt = clip_excerpt(error_out);
         info.exit_code = 1;
@@ -377,17 +402,25 @@ bool transcribe_pcm_locked_with_info(
 
     const auto extract_start = Clock::now();
     const int n_segments = whisper_full_n_segments(state.ctx);
+    result_out.segments.clear();
     std::string transcript;
     for (int i = 0; i < n_segments; ++i) {
+        WhisperSegmentResult segment_result;
+        segment_result.t0_ms = whisper_full_get_segment_t0(state.ctx, i) * 10;
+        segment_result.t1_ms = whisper_full_get_segment_t1(state.ctx, i) * 10;
         if (const char* segment = whisper_full_get_segment_text(state.ctx, i)) {
-            transcript += segment;
+            segment_result.text = segment;
+            transcript += segment_result.text;
         }
+        segment_result.token_ids = tokenize_text_for_prompt(state.ctx, segment_result.text, 256);
+        result_out.segments.push_back(std::move(segment_result));
     }
-    text_out = trim_copy(transcript);
+    result_out.text = trim_copy(transcript);
+    result_out.prompt_tokens_from_output = tokenize_text_for_prompt(state.ctx, result_out.text, 512);
     const double extract_ms = std::chrono::duration<double, std::milli>(Clock::now() - extract_start).count();
     const double total_ms = std::chrono::duration<double, std::milli>(Clock::now() - total_start).count();
 
-    info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+    info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads, options);
     info.stdout_excerpt.clear();
     info.exit_code = 0;
     info.gpu_active = state.use_gpu;
@@ -400,7 +433,7 @@ bool transcribe_pcm_locked_with_info(
     info.total_ms = total_ms;
     info.timing_excerpt = summarize_timings(init_ms, wav_ms, infer_ms, extract_ms, total_ms);
 
-    if (text_out.empty()) {
+    if (result_out.text.empty()) {
         error_out = "Whisper returned empty transcript output.";
         info.backend_summary = "empty_transcript";
         info.stderr_excerpt = clip_excerpt(error_out);
@@ -418,7 +451,7 @@ bool transcribe_pcm_locked_with_info(
              << " wav_ms=" << wav_ms
              << " infer_ms=" << infer_ms
              << " segments=" << n_segments
-             << " chars=" << text_out.size();
+             << " chars=" << result_out.text.size();
     pipeline_debug::log("whisper", log_line.str());
 
     return true;
@@ -459,7 +492,8 @@ bool transcribe_file_to_string_with_info(
     if (!load_wav_pcm16_mono_16khz(audio_path, wav_data, error_out)) {
         info.backend_summary = "wav_parse_failed";
         info.stderr_excerpt = clip_excerpt(error_out);
-        info.argument_excerpt = build_profile_excerpt(info.gpu_requested, get_whisper_gpu_device(), is_whisper_flash_attn_enabled(), resolve_threads());
+        info.argument_excerpt = build_profile_excerpt(
+            info.gpu_requested, get_whisper_gpu_device(), is_whisper_flash_attn_enabled(), resolve_threads(), WhisperDecodeOptions{});
         info.exit_code = 1;
         info.timing_excerpt = summarize_timings(0.0, std::chrono::duration<double, std::milli>(Clock::now() - wav_start).count(), 0.0, 0.0,
                                                 std::chrono::duration<double, std::milli>(Clock::now() - total_start).count());
@@ -470,8 +504,17 @@ bool transcribe_file_to_string_with_info(
 
     auto& state = resident_state();
     std::lock_guard<std::mutex> guard(state.mutex);
-    return transcribe_pcm_locked_with_info(
-        state, model_path, wav_data.samples.data(), static_cast<int>(wav_data.samples.size()), wav_ms, text_out, error_out, info, total_start);
+    WhisperDecodeResult result;
+    WhisperDecodeOptions options;
+    options.enable_timestamps = false;
+    options.single_segment = true;
+    options.no_context = true;
+    if (!transcribe_pcm_locked_with_info(
+            state, model_path, wav_data.samples.data(), static_cast<int>(wav_data.samples.size()), wav_ms, options, result, error_out, info, total_start)) {
+        return false;
+    }
+    text_out = result.text;
+    return true;
 }
 
 bool transcribe_pcm_to_string_with_info(
@@ -511,8 +554,59 @@ bool transcribe_pcm_to_string_with_info(
     const auto total_start = Clock::now();
     auto& state = resident_state();
     std::lock_guard<std::mutex> guard(state.mutex);
+    WhisperDecodeResult result;
+    WhisperDecodeOptions options;
+    options.enable_timestamps = false;
+    options.single_segment = true;
+    options.no_context = true;
+    if (!transcribe_pcm_locked_with_info(
+            state, model_path, pcm, pcm_sample_count, 0.0, options, result, error_out, info, total_start)) {
+        return false;
+    }
+    text_out = result.text;
+    return true;
+}
+
+bool transcribe_pcm_to_result_with_info(
+    const float* pcm,
+    int pcm_sample_count,
+    const WhisperDecodeOptions& options,
+    WhisperDecodeResult& result_out,
+    std::string& error_out,
+    WhisperRunInfo* info_out) {
+    result_out = WhisperDecodeResult{};
+    error_out.clear();
+
+    WhisperRunInfo local_info{};
+    WhisperRunInfo& info = info_out ? *info_out : local_info;
+    info = WhisperRunInfo{};
+    info.gpu_requested = is_whisper_gpu_requested();
+    info.resolved_whisper_executable = "in_process_resident";
+
+    if (!pcm || pcm_sample_count <= 0) {
+        error_out = "PCM input is empty.";
+        info.backend_summary = "empty_pcm_input";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        return false;
+    }
+
+    const auto model_path = get_whisper_model_path();
+    if (!std::filesystem::exists(model_path)) {
+        error_out = "Whisper model not found: " + model_path.string();
+        info.resolved_model_path = model_path.string();
+        info.backend_summary = "model_missing";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        return false;
+    }
+    info.resolved_model_path = model_path.string();
+
+    const auto total_start = Clock::now();
+    auto& state = resident_state();
+    std::lock_guard<std::mutex> guard(state.mutex);
     return transcribe_pcm_locked_with_info(
-        state, model_path, pcm, pcm_sample_count, 0.0, text_out, error_out, info, total_start);
+        state, model_path, pcm, pcm_sample_count, 0.0, options, result_out, error_out, info, total_start);
 }
 
 bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::string& text_out, std::string& error_out) {
