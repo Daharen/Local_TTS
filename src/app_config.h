@@ -42,10 +42,6 @@ struct AppConfig {
     int stream_length_ms;
     int stream_keep_ms;
     bool stream_finalize_on_release;
-    int stream_local_agreement_n;
-    int stream_prompt_max_tokens;
-    int stream_trim_guard_ms;
-    bool stream_trim_on_segment_boundary;
 };
 
 const AppConfig& get_app_config();
