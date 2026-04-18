@@ -201,6 +201,10 @@ private:
         int stream_keep_ms = 0;
         int latest_partial_chars = 0;
         int committed_chars = 0;
+        int committed_prefix_chars = 0;
+        int latest_window_chars = 0;
+        int final_candidate_chars = 0;
+        int stream_overlap_failure_count = 0;
         bool finalization_used_partial_fallback = false;
         bool stream_used_aggregate_text = false;
         bool stream_waited_for_inflight_decode = false;
@@ -381,6 +385,10 @@ private:
                 log.stream_decode_iterations = stream_result.decode_iteration_count;
                 log.latest_partial_chars = stream_result.latest_partial_chars;
                 log.committed_chars = stream_result.committed_chars;
+                log.committed_prefix_chars = stream_result.committed_prefix_chars;
+                log.latest_window_chars = stream_result.latest_window_chars;
+                log.final_candidate_chars = stream_result.final_candidate_chars;
+                log.stream_overlap_failure_count = stream_result.overlap_failure_count;
                 log.finalization_used_partial_fallback = stream_result.used_partial_fallback;
                 log.stream_used_aggregate_text = stream_result.used_aggregate_text;
                 log.stream_waited_for_inflight_decode = stream_result.waited_for_inflight_decode;
@@ -402,6 +410,10 @@ private:
                 debug_line("[STREAM_KEEP_MS] " + std::to_string(log.stream_keep_ms));
                 debug_line("[STREAM_LATEST_PARTIAL_CHARS] " + std::to_string(log.latest_partial_chars));
                 debug_line("[STREAM_COMMITTED_CHARS] " + std::to_string(log.committed_chars));
+                debug_line("[STREAM_COMMITTED_PREFIX_CHARS] " + std::to_string(log.committed_prefix_chars));
+                debug_line("[STREAM_LATEST_WINDOW_CHARS] " + std::to_string(log.latest_window_chars));
+                debug_line("[STREAM_FINAL_CANDIDATE_CHARS] " + std::to_string(log.final_candidate_chars));
+                debug_line("[STREAM_OVERLAP_FAILURE_COUNT] " + std::to_string(log.stream_overlap_failure_count));
                 debug_line(std::string("[STREAM_FINALIZATION_USED_PARTIAL_FALLBACK] ") +
                            (log.finalization_used_partial_fallback ? "true" : "false"));
                 debug_line(std::string("[STREAM_FINALIZATION_SOURCE] ") + log.stream_finalization_source);
@@ -854,6 +866,10 @@ private:
         out << "[STREAM_KEEP_MS] " << log.stream_keep_ms << "\n";
         out << "[STREAM_LATEST_PARTIAL_CHARS] " << log.latest_partial_chars << "\n";
         out << "[STREAM_COMMITTED_CHARS] " << log.committed_chars << "\n";
+        out << "[STREAM_COMMITTED_PREFIX_CHARS] " << log.committed_prefix_chars << "\n";
+        out << "[STREAM_LATEST_WINDOW_CHARS] " << log.latest_window_chars << "\n";
+        out << "[STREAM_FINAL_CANDIDATE_CHARS] " << log.final_candidate_chars << "\n";
+        out << "[STREAM_OVERLAP_FAILURE_COUNT] " << log.stream_overlap_failure_count << "\n";
         out << "[STREAM_FINALIZATION_USED_PARTIAL_FALLBACK] " << (log.finalization_used_partial_fallback ? "true" : "false") << "\n";
         out << "[STREAM_FINALIZATION_SOURCE] " << (log.stream_finalization_source.empty() ? "none" : log.stream_finalization_source) << "\n";
         out << "[STREAM_WAITED_FOR_INFLIGHT_DECODE] " << (log.stream_waited_for_inflight_decode ? "true" : "false") << "\n";
