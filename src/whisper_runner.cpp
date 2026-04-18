@@ -305,6 +305,125 @@ std::string summarize_timings(double init_ms, double wav_ms, double infer_ms, do
     return out.str();
 }
 
+bool transcribe_pcm_locked_with_info(
+    ResidentWhisperState& state,
+    const std::filesystem::path& model_path,
+    const float* pcm,
+    int pcm_sample_count,
+    double wav_ms,
+    std::string& text_out,
+    std::string& error_out,
+    WhisperRunInfo& info,
+    const Clock::time_point& total_start) {
+    const bool use_gpu = is_whisper_gpu_requested();
+    const int gpu_device = get_whisper_gpu_device();
+    const bool flash_attn = is_whisper_flash_attn_enabled();
+    const int threads = resolve_threads();
+
+    bool init_reused = false;
+    double init_ms = 0.0;
+    if (!ensure_resident_context(state, model_path, use_gpu, gpu_device, flash_attn, threads, init_reused, init_ms, error_out)) {
+        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+        info.backend_summary = "resident_init_failed";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        info.gpu_active = false;
+        info.cpu_fallback_reported = false;
+        info.init_ms = init_ms;
+        info.wav_ms = wav_ms;
+        info.total_ms = std::chrono::duration<double, std::milli>(Clock::now() - total_start).count();
+        info.timing_excerpt = summarize_timings(init_ms, wav_ms, 0.0, 0.0, info.total_ms);
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=resident_init_failed message=" + error_out, true);
+        return false;
+    }
+
+    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    wparams.print_progress = false;
+    wparams.print_special = false;
+    wparams.print_realtime = false;
+    wparams.print_timestamps = false;
+    wparams.translate = false;
+    wparams.no_timestamps = true;
+    wparams.single_segment = true;
+    wparams.language = "en";
+    wparams.n_threads = threads;
+    wparams.prompt_tokens = nullptr;
+    wparams.prompt_n_tokens = 0;
+    wparams.temperature_inc = 0.0f;
+    if constexpr (has_no_context_field<whisper_full_params>::value) {
+        wparams.no_context = true;
+    }
+
+    const auto infer_start = Clock::now();
+    const int infer_rc = whisper_full(state.ctx, wparams, pcm, pcm_sample_count);
+    const double infer_ms = std::chrono::duration<double, std::milli>(Clock::now() - infer_start).count();
+
+    if (infer_rc != 0) {
+        error_out = "whisper_full failed with status: " + std::to_string(infer_rc);
+        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+        info.backend_summary = "infer_failed";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        info.gpu_active = state.use_gpu;
+        info.cpu_fallback_reported = false;
+        info.init_ms = init_ms;
+        info.wav_ms = wav_ms;
+        info.infer_ms = infer_ms;
+        info.total_ms = std::chrono::duration<double, std::milli>(Clock::now() - total_start).count();
+        info.timing_excerpt = summarize_timings(init_ms, wav_ms, infer_ms, 0.0, info.total_ms);
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=infer_failed message=" + error_out, true);
+        return false;
+    }
+
+    const auto extract_start = Clock::now();
+    const int n_segments = whisper_full_n_segments(state.ctx);
+    std::string transcript;
+    for (int i = 0; i < n_segments; ++i) {
+        if (const char* segment = whisper_full_get_segment_text(state.ctx, i)) {
+            transcript += segment;
+        }
+    }
+    text_out = trim_copy(transcript);
+    const double extract_ms = std::chrono::duration<double, std::milli>(Clock::now() - extract_start).count();
+    const double total_ms = std::chrono::duration<double, std::milli>(Clock::now() - total_start).count();
+
+    info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+    info.stdout_excerpt.clear();
+    info.exit_code = 0;
+    info.gpu_active = state.use_gpu;
+    info.cpu_fallback_reported = false;
+    info.backend_summary = state.use_gpu ? "in_process_gpu" : "in_process_cpu";
+    info.init_ms = init_ms;
+    info.wav_ms = wav_ms;
+    info.infer_ms = infer_ms;
+    info.extract_ms = extract_ms;
+    info.total_ms = total_ms;
+    info.timing_excerpt = summarize_timings(init_ms, wav_ms, infer_ms, extract_ms, total_ms);
+
+    if (text_out.empty()) {
+        error_out = "Whisper returned empty transcript output.";
+        info.backend_summary = "empty_transcript";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=empty_transcript", true);
+        return false;
+    }
+
+    info.stderr_excerpt.clear();
+
+    std::ostringstream log_line;
+    log_line << "mode=in_process_resident"
+             << " backend=" << info.backend_summary
+             << " init_reused=" << (init_reused ? "true" : "false")
+             << " wav_ms=" << wav_ms
+             << " infer_ms=" << infer_ms
+             << " segments=" << n_segments
+             << " chars=" << text_out.size();
+    pipeline_debug::log("whisper", log_line.str());
+
+    return true;
+}
+
 }  // namespace
 
 bool transcribe_file_to_string_with_info(
@@ -351,104 +470,49 @@ bool transcribe_file_to_string_with_info(
 
     auto& state = resident_state();
     std::lock_guard<std::mutex> guard(state.mutex);
+    return transcribe_pcm_locked_with_info(
+        state, model_path, wav_data.samples.data(), static_cast<int>(wav_data.samples.size()), wav_ms, text_out, error_out, info, total_start);
+}
 
-    const bool use_gpu = is_whisper_gpu_requested();
-    const int gpu_device = get_whisper_gpu_device();
-    const bool flash_attn = is_whisper_flash_attn_enabled();
-    const int threads = resolve_threads();
+bool transcribe_pcm_to_string_with_info(
+    const float* pcm,
+    int pcm_sample_count,
+    std::string& text_out,
+    std::string& error_out,
+    WhisperRunInfo* info_out) {
+    text_out.clear();
+    error_out.clear();
 
-    bool init_reused = false;
-    double init_ms = 0.0;
-    if (!ensure_resident_context(state, model_path, use_gpu, gpu_device, flash_attn, threads, init_reused, init_ms, error_out)) {
-        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
-        info.backend_summary = "resident_init_failed";
+    WhisperRunInfo local_info{};
+    WhisperRunInfo& info = info_out ? *info_out : local_info;
+    info = WhisperRunInfo{};
+    info.gpu_requested = is_whisper_gpu_requested();
+    info.resolved_whisper_executable = "in_process_resident";
+
+    if (!pcm || pcm_sample_count <= 0) {
+        error_out = "PCM input is empty.";
+        info.backend_summary = "empty_pcm_input";
         info.stderr_excerpt = clip_excerpt(error_out);
         info.exit_code = 1;
-        info.gpu_active = false;
-        info.cpu_fallback_reported = false;
-        info.timing_excerpt = summarize_timings(init_ms, wav_ms, 0.0, 0.0,
-                                                std::chrono::duration<double, std::milli>(Clock::now() - total_start).count());
-        pipeline_debug::log("whisper", "mode=in_process_resident failure=resident_init_failed message=" + error_out, true);
         return false;
     }
 
-    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    wparams.print_progress = false;
-    wparams.print_special = false;
-    wparams.print_realtime = false;
-    wparams.print_timestamps = false;
-    wparams.translate = false;
-    wparams.no_timestamps = true;
-    wparams.single_segment = true;
-    wparams.language = "en";
-    wparams.n_threads = threads;
-    wparams.prompt_tokens = nullptr;
-    wparams.prompt_n_tokens = 0;
-    wparams.temperature_inc = 0.0f;
-    if constexpr (has_no_context_field<whisper_full_params>::value) {
-        wparams.no_context = true;
-    }
-
-    const auto infer_start = Clock::now();
-    const int infer_rc = whisper_full(state.ctx, wparams, wav_data.samples.data(), static_cast<int>(wav_data.samples.size()));
-    const double infer_ms = std::chrono::duration<double, std::milli>(Clock::now() - infer_start).count();
-
-    if (infer_rc != 0) {
-        error_out = "whisper_full failed with status: " + std::to_string(infer_rc);
-        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
-        info.backend_summary = "infer_failed";
+    const auto model_path = get_whisper_model_path();
+    if (!std::filesystem::exists(model_path)) {
+        error_out = "Whisper model not found: " + model_path.string();
+        info.resolved_model_path = model_path.string();
+        info.backend_summary = "model_missing";
         info.stderr_excerpt = clip_excerpt(error_out);
         info.exit_code = 1;
-        info.gpu_active = state.use_gpu;
-        info.cpu_fallback_reported = false;
-        info.timing_excerpt = summarize_timings(init_ms, wav_ms, infer_ms, 0.0,
-                                                std::chrono::duration<double, std::milli>(Clock::now() - total_start).count());
-        pipeline_debug::log("whisper", "mode=in_process_resident failure=infer_failed message=" + error_out, true);
         return false;
     }
+    info.resolved_model_path = model_path.string();
 
-    const auto extract_start = Clock::now();
-    const int n_segments = whisper_full_n_segments(state.ctx);
-    std::string transcript;
-    for (int i = 0; i < n_segments; ++i) {
-        if (const char* segment = whisper_full_get_segment_text(state.ctx, i)) {
-            transcript += segment;
-        }
-    }
-    text_out = trim_copy(transcript);
-    const double extract_ms = std::chrono::duration<double, std::milli>(Clock::now() - extract_start).count();
-    const double total_ms = std::chrono::duration<double, std::milli>(Clock::now() - total_start).count();
-
-    info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
-    info.stdout_excerpt.clear();
-    info.exit_code = 0;
-    info.gpu_active = state.use_gpu;
-    info.cpu_fallback_reported = false;
-    info.backend_summary = state.use_gpu ? "in_process_gpu" : "in_process_cpu";
-    info.timing_excerpt = summarize_timings(init_ms, wav_ms, infer_ms, extract_ms, total_ms);
-
-    if (text_out.empty()) {
-        error_out = "Whisper returned empty transcript output.";
-        info.backend_summary = "empty_transcript";
-        info.stderr_excerpt = clip_excerpt(error_out);
-        info.exit_code = 1;
-        pipeline_debug::log("whisper", "mode=in_process_resident failure=empty_transcript", true);
-        return false;
-    }
-
-    info.stderr_excerpt.clear();
-
-    std::ostringstream log_line;
-    log_line << "mode=in_process_resident"
-             << " backend=" << info.backend_summary
-             << " init_reused=" << (init_reused ? "true" : "false")
-             << " wav_ms=" << wav_ms
-             << " infer_ms=" << infer_ms
-             << " segments=" << n_segments
-             << " chars=" << text_out.size();
-    pipeline_debug::log("whisper", log_line.str());
-
-    return true;
+    const auto total_start = Clock::now();
+    auto& state = resident_state();
+    std::lock_guard<std::mutex> guard(state.mutex);
+    return transcribe_pcm_locked_with_info(
+        state, model_path, pcm, pcm_sample_count, 0.0, text_out, error_out, info, total_start);
 }
 
 bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::string& text_out, std::string& error_out) {

@@ -15,12 +15,23 @@ struct WhisperRunInfo {
     bool cpu_fallback_reported = false;
     std::string backend_summary;
     std::string timing_excerpt;
+    double init_ms = 0.0;
+    double wav_ms = 0.0;
+    double infer_ms = 0.0;
+    double extract_ms = 0.0;
+    double total_ms = 0.0;
 };
 
 int run_whisper_file_transcription(const std::filesystem::path& audio_path);
 bool transcribe_file_to_string(const std::filesystem::path& audio_path, std::string& text_out, std::string& error_out);
 bool transcribe_file_to_string_with_info(
     const std::filesystem::path& audio_path,
+    std::string& text_out,
+    std::string& error_out,
+    WhisperRunInfo* info_out);
+bool transcribe_pcm_to_string_with_info(
+    const float* pcm,
+    int pcm_sample_count,
     std::string& text_out,
     std::string& error_out,
     WhisperRunInfo* info_out);

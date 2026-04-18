@@ -37,6 +37,11 @@ struct AppConfig {
     int correction_segment_max_chars;
     int correction_segment_overlap_chars;
     int correction_force_segmentation_threshold_chars;
+    bool streaming_enabled;
+    int stream_step_ms;
+    int stream_length_ms;
+    int stream_keep_ms;
+    bool stream_finalize_on_release;
 };
 
 const AppConfig& get_app_config();
