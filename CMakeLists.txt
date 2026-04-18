@@ -6,27 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(LOCAL_TTS_ENABLE_DASHBOARD "Enable diagnostics dashboard support" ON)
-set(LOCAL_TTS_WHISPER_CPP_ROOT "F:/Local_TTS_Large_Data/external/whisper.cpp_cuda" CACHE PATH "Path to external whisper.cpp source tree")
-
-if(NOT EXISTS "${LOCAL_TTS_WHISPER_CPP_ROOT}/CMakeLists.txt")
-    message(FATAL_ERROR "LOCAL_TTS_WHISPER_CPP_ROOT is invalid: '${LOCAL_TTS_WHISPER_CPP_ROOT}'. Expected whisper.cpp source tree with CMakeLists.txt.")
-endif()
-
-add_subdirectory("${LOCAL_TTS_WHISPER_CPP_ROOT}" "${CMAKE_BINARY_DIR}/external/whisper_cpp")
-
-get_property(LOCAL_TTS_WHISPER_CPP_TARGETS GLOBAL PROPERTY TARGETS)
-set(LOCAL_TTS_WHISPER_LIBRARY_TARGET "")
-foreach(candidate IN LISTS LOCAL_TTS_WHISPER_CPP_TARGETS)
-    get_target_property(candidate_type "${candidate}" TYPE)
-    if((candidate_type STREQUAL "STATIC_LIBRARY" OR candidate_type STREQUAL "SHARED_LIBRARY") AND candidate MATCHES "(^|::)whisper$")
-        set(LOCAL_TTS_WHISPER_LIBRARY_TARGET "${candidate}")
-        break()
-    endif()
-endforeach()
-
-if(LOCAL_TTS_WHISPER_LIBRARY_TARGET STREQUAL "")
-    message(FATAL_ERROR "Unable to find whisper.cpp library target in '${LOCAL_TTS_WHISPER_CPP_ROOT}'. Found targets: ${LOCAL_TTS_WHISPER_CPP_TARGETS}")
-endif()
 
 set(LOCAL_TTS_SOURCES
     src/main.cpp
@@ -48,11 +27,6 @@ if(LOCAL_TTS_ENABLE_DASHBOARD)
 endif()
 
 add_executable(local_tts ${LOCAL_TTS_SOURCES})
-target_link_libraries(local_tts PRIVATE ${LOCAL_TTS_WHISPER_LIBRARY_TARGET})
-
-if(EXISTS "${LOCAL_TTS_WHISPER_CPP_ROOT}/include")
-    target_include_directories(local_tts PRIVATE "${LOCAL_TTS_WHISPER_CPP_ROOT}/include")
-endif()
 
 if(LOCAL_TTS_ENABLE_DASHBOARD)
     target_compile_definitions(local_tts PRIVATE LOCAL_TTS_ENABLE_DASHBOARD=1)
