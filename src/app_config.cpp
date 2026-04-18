@@ -313,6 +313,27 @@ void apply_config_json(AppConfig& config, const std::string& json) {
     if (!stream_finalize_on_release.empty()) {
         config.stream_finalize_on_release = parse_bool_value(stream_finalize_on_release, config.stream_finalize_on_release);
     }
+
+    const auto stream_local_agreement_n = find_json_value_token(json, "stream_local_agreement_n");
+    if (!stream_local_agreement_n.empty()) {
+        config.stream_local_agreement_n = parse_int_value(stream_local_agreement_n, config.stream_local_agreement_n);
+    }
+
+    const auto stream_prompt_max_tokens = find_json_value_token(json, "stream_prompt_max_tokens");
+    if (!stream_prompt_max_tokens.empty()) {
+        config.stream_prompt_max_tokens = parse_int_value(stream_prompt_max_tokens, config.stream_prompt_max_tokens);
+    }
+
+    const auto stream_trim_guard_ms = find_json_value_token(json, "stream_trim_guard_ms");
+    if (!stream_trim_guard_ms.empty()) {
+        config.stream_trim_guard_ms = parse_int_value(stream_trim_guard_ms, config.stream_trim_guard_ms);
+    }
+
+    const auto stream_trim_on_segment_boundary = find_json_value_token(json, "stream_trim_on_segment_boundary");
+    if (!stream_trim_on_segment_boundary.empty()) {
+        config.stream_trim_on_segment_boundary =
+            parse_bool_value(stream_trim_on_segment_boundary, config.stream_trim_on_segment_boundary);
+    }
 }
 
 void apply_environment_overrides(AppConfig& config) {
@@ -457,6 +478,19 @@ void apply_environment_overrides(AppConfig& config) {
     if (const char* env = std::getenv("LOCAL_TTS_STREAM_FINALIZE_ON_RELEASE")) {
         config.stream_finalize_on_release = parse_bool_value(trim_copy(env), config.stream_finalize_on_release);
     }
+    if (const char* env = std::getenv("LOCAL_TTS_STREAM_LOCAL_AGREEMENT_N")) {
+        config.stream_local_agreement_n = parse_int_value(trim_copy(env), config.stream_local_agreement_n);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_STREAM_PROMPT_MAX_TOKENS")) {
+        config.stream_prompt_max_tokens = parse_int_value(trim_copy(env), config.stream_prompt_max_tokens);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_STREAM_TRIM_GUARD_MS")) {
+        config.stream_trim_guard_ms = parse_int_value(trim_copy(env), config.stream_trim_guard_ms);
+    }
+    if (const char* env = std::getenv("LOCAL_TTS_STREAM_TRIM_ON_SEGMENT_BOUNDARY")) {
+        config.stream_trim_on_segment_boundary =
+            parse_bool_value(trim_copy(env), config.stream_trim_on_segment_boundary);
+    }
 }
 
 AppConfig make_default_config() {
@@ -501,6 +535,10 @@ AppConfig make_default_config() {
     config.stream_length_ms = 6000;
     config.stream_keep_ms = 250;
     config.stream_finalize_on_release = true;
+    config.stream_local_agreement_n = 2;
+    config.stream_prompt_max_tokens = 256;
+    config.stream_trim_guard_ms = 250;
+    config.stream_trim_on_segment_boundary = true;
 
     return config;
 }
