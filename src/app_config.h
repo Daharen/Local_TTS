@@ -7,6 +7,11 @@ struct AppConfig {
     std::filesystem::path large_data_root;
     std::filesystem::path whisper_cpp_root;
     std::filesystem::path whisper_model_path;
+    std::filesystem::path whisper_cli_path;
+    bool whisper_use_gpu;
+    int whisper_gpu_device;
+    bool whisper_flash_attn;
+    int whisper_threads;
     std::filesystem::path llama_cpp_root;
     std::filesystem::path llama_model_path;
     bool pipeline_debug_enabled;

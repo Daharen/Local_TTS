@@ -145,6 +145,16 @@ private:
         std::string raw_transcript;
         std::string formatted_text;
         std::string transcribe_error;
+        std::string whisper_exe;
+        std::string whisper_args;
+        bool whisper_gpu_requested = false;
+        bool whisper_gpu_active = false;
+        bool whisper_cpu_fallback = false;
+        std::string whisper_backend_summary;
+        std::string whisper_stderr_excerpt;
+        std::string whisper_stdout_excerpt;
+        std::string whisper_timing_excerpt;
+        int whisper_exit_code = -1;
         std::string correction_error;
         std::string llm_backend;
         std::string correction_raw_stdout;
@@ -351,12 +361,38 @@ private:
                                       true,
                                       true);
                 diagnostics::diag_begin(session_id_, diagnostics::DiagnosticStage::Whisper, "whisper begin");
-                transcribe_file_to_string(wav_path, log.raw_transcript, log.transcribe_error);
+                WhisperRunInfo whisper_info;
+                transcribe_file_to_string_with_info(wav_path, log.raw_transcript, log.transcribe_error, &whisper_info);
+                log.whisper_exe = whisper_info.resolved_whisper_executable;
+                log.whisper_args = whisper_info.argument_excerpt;
+                log.whisper_gpu_requested = whisper_info.gpu_requested;
+                log.whisper_gpu_active = whisper_info.gpu_active;
+                log.whisper_cpu_fallback = whisper_info.cpu_fallback_reported;
+                log.whisper_backend_summary = whisper_info.backend_summary;
+                log.whisper_stderr_excerpt = whisper_info.stderr_excerpt;
+                log.whisper_stdout_excerpt = whisper_info.stdout_excerpt;
+                log.whisper_timing_excerpt = whisper_info.timing_excerpt;
+                log.whisper_exit_code = whisper_info.exit_code;
                 diagnostics::diag_end(session_id_,
                                       diagnostics::DiagnosticStage::Whisper,
                                       log.transcribe_error.empty() ? "whisper completed" : log.transcribe_error,
                                       true,
                                       log.transcribe_error.empty());
+                if (!log.whisper_exe.empty()) {
+                    debug_line("[WHISPER_EXE] " + log.whisper_exe);
+                }
+                if (!log.whisper_args.empty()) {
+                    debug_line("[WHISPER_ARGS] " + log.whisper_args);
+                }
+                debug_line(std::string("[WHISPER_GPU_REQUESTED] ") + (log.whisper_gpu_requested ? "true" : "false"));
+                debug_line(std::string("[WHISPER_GPU_ACTIVE] ") + (log.whisper_gpu_active ? "true" : "false"));
+                debug_line("[WHISPER_BACKEND_SUMMARY] " + (log.whisper_backend_summary.empty() ? "unknown" : log.whisper_backend_summary));
+                if (!log.whisper_stderr_excerpt.empty()) {
+                    debug_line("[WHISPER_STDERR_EXCERPT] " + log.whisper_stderr_excerpt);
+                }
+                if (!log.whisper_timing_excerpt.empty()) {
+                    debug_line("[WHISPER_TIMING_EXCERPT] " + log.whisper_timing_excerpt);
+                }
                 if (!log.transcribe_error.empty()) {
                     debug_line("[WHISPER_ERROR] " + log.transcribe_error, true);
                 } else {
@@ -790,6 +826,28 @@ private:
             out << "[LLM_RESIDENT_PROBE_RESPONSE] " << log.resident_probe_response_excerpt << "\n";
         }
         out << "[ONESHOT_STDERR_CUDA_HINT] " << (log.oneshot_stderr_cuda_hint ? "true" : "false") << "\n";
+        if (!log.whisper_exe.empty()) {
+            out << "[WHISPER_EXE] " << log.whisper_exe << "\n";
+        }
+        if (!log.whisper_args.empty()) {
+            out << "[WHISPER_ARGS] " << log.whisper_args << "\n";
+        }
+        out << "[WHISPER_GPU_REQUESTED] " << (log.whisper_gpu_requested ? "true" : "false") << "\n";
+        out << "[WHISPER_GPU_ACTIVE] " << (log.whisper_gpu_active ? "true" : "false") << "\n";
+        out << "[WHISPER_CPU_FALLBACK] " << (log.whisper_cpu_fallback ? "true" : "false") << "\n";
+        out << "[WHISPER_BACKEND_SUMMARY] " << (log.whisper_backend_summary.empty() ? "unknown" : log.whisper_backend_summary) << "\n";
+        if (log.whisper_exit_code >= 0) {
+            out << "[WHISPER_EXIT_CODE] " << log.whisper_exit_code << "\n";
+        }
+        if (!log.whisper_stdout_excerpt.empty()) {
+            out << "[WHISPER_STDOUT_EXCERPT] " << log.whisper_stdout_excerpt << "\n";
+        }
+        if (!log.whisper_stderr_excerpt.empty()) {
+            out << "[WHISPER_STDERR_EXCERPT] " << log.whisper_stderr_excerpt << "\n";
+        }
+        if (!log.whisper_timing_excerpt.empty()) {
+            out << "[WHISPER_TIMING_EXCERPT] " << log.whisper_timing_excerpt << "\n";
+        }
         out << "[WHISPER_TEXT_METRICS] chars=" << log.whisper_text_chars << " words=" << log.whisper_text_words << "\n";
         out << "[LLM_OUTPUT_METRICS] chars=" << log.llm_output_chars << " words=" << log.llm_output_words << "\n";
 
