@@ -24,6 +24,12 @@ struct TokenData {
     std::string normalized;
 };
 
+struct OverlapResult {
+    bool match_ok = false;
+    std::size_t overlap_tokens = 0;
+    std::size_t promoted_prefix_tokens = 0;
+};
+
 std::string collapse_whitespace(std::string text) {
     std::string out;
     out.reserve(text.size());
@@ -74,9 +80,13 @@ std::vector<TokenData> tokenize_for_merge(const std::string& text) {
     return tokens;
 }
 
-std::string join_token_range(const std::vector<TokenData>& tokens, std::size_t start) {
+std::string join_token_range(const std::vector<TokenData>& tokens, std::size_t start, std::size_t end = std::string::npos) {
+    const std::size_t bounded_end = (end == std::string::npos) ? tokens.size() : (std::min)(end, tokens.size());
+    if (start >= bounded_end) {
+        return {};
+    }
     std::ostringstream out;
-    for (std::size_t i = start; i < tokens.size(); ++i) {
+    for (std::size_t i = start; i < bounded_end; ++i) {
         if (i > start) {
             out << ' ';
         }
@@ -85,94 +95,91 @@ std::string join_token_range(const std::vector<TokenData>& tokens, std::size_t s
     return out.str();
 }
 
-bool is_prefix_match(const std::vector<TokenData>& prefix, const std::vector<TokenData>& full) {
-    if (prefix.size() > full.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < prefix.size(); ++i) {
-        if (prefix[i].normalized != full[i].normalized) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool contained_near_end(const std::vector<TokenData>& haystack, const std::vector<TokenData>& needle) {
-    if (needle.empty() || haystack.size() < needle.size()) {
-        return false;
-    }
-    const std::size_t start_limit = haystack.size() - needle.size();
-    const std::size_t near_end_start = (start_limit > 6) ? (start_limit - 6) : 0;
-    for (std::size_t start = near_end_start; start <= start_limit; ++start) {
-        bool matches = true;
-        for (std::size_t i = 0; i < needle.size(); ++i) {
-            if (haystack[start + i].normalized != needle[i].normalized) {
-                matches = false;
-                break;
-            }
-        }
-        if (matches) {
-            return true;
-        }
-    }
-    return false;
-}
-
-std::string merge_partial_into_committed(const std::string& committed, const std::string& partial) {
-    const std::string committed_clean = collapse_whitespace(committed);
-    const std::string partial_clean = collapse_whitespace(partial);
-    if (committed_clean.empty()) {
-        return partial_clean;
-    }
-    if (partial_clean.empty()) {
-        return committed_clean;
-    }
-
-    const auto committed_tokens = tokenize_for_merge(committed_clean);
-    const auto partial_tokens = tokenize_for_merge(partial_clean);
-    if (committed_tokens.empty()) {
-        return partial_clean;
-    }
-    if (partial_tokens.empty()) {
-        return committed_clean;
-    }
-
-    if (is_prefix_match(committed_tokens, partial_tokens)) {
-        return partial_clean;
-    }
-    if (contained_near_end(committed_tokens, partial_tokens)) {
-        return committed_clean;
-    }
-
-    const std::size_t max_overlap = (std::min)(committed_tokens.size(), partial_tokens.size());
-    std::size_t best_overlap = 0;
+std::size_t best_suffix_prefix_overlap_tokens(const std::vector<TokenData>& prev, const std::vector<TokenData>& curr) {
+    const std::size_t max_overlap = (std::min)(prev.size(), curr.size());
     for (std::size_t k = max_overlap; k > 0; --k) {
         bool overlap = true;
         for (std::size_t i = 0; i < k; ++i) {
-            if (committed_tokens[committed_tokens.size() - k + i].normalized != partial_tokens[i].normalized) {
+            if (prev[prev.size() - k + i].normalized != curr[i].normalized) {
                 overlap = false;
                 break;
             }
         }
         if (overlap) {
-            best_overlap = k;
-            break;
+            return k;
         }
     }
+    return 0;
+}
 
-    if (best_overlap > 0) {
-        if (best_overlap >= partial_tokens.size()) {
-            return committed_clean;
-        }
-        std::string merged = committed_clean;
-        merged.push_back(' ');
-        merged += join_token_range(partial_tokens, best_overlap);
-        return collapse_whitespace(merged);
+std::size_t min_required_overlap_tokens(std::size_t prev_count, std::size_t curr_count) {
+    const std::size_t shorter = (std::min)(prev_count, curr_count);
+    const std::size_t pct_requirement = (shorter + 4) / 5;  // ceil(20%)
+    return (std::max<std::size_t>)(3, pct_requirement);
+}
+
+OverlapResult promote_window_prefix(std::string& committed_prefix_text,
+                                    const std::string& previous_window_text,
+                                    const std::string& current_window_text) {
+    OverlapResult result;
+    const std::string prev_clean = collapse_whitespace(previous_window_text);
+    const std::string curr_clean = collapse_whitespace(current_window_text);
+    if (prev_clean.empty() || curr_clean.empty()) {
+        return result;
     }
 
+    const auto prev_tokens = tokenize_for_merge(prev_clean);
+    const auto curr_tokens = tokenize_for_merge(curr_clean);
+    if (prev_tokens.empty() || curr_tokens.empty()) {
+        return result;
+    }
+
+    const std::size_t best_overlap = best_suffix_prefix_overlap_tokens(prev_tokens, curr_tokens);
+    const std::size_t min_overlap = min_required_overlap_tokens(prev_tokens.size(), curr_tokens.size());
+    if (best_overlap < min_overlap) {
+        return result;
+    }
+
+    result.match_ok = true;
+    result.overlap_tokens = best_overlap;
+    result.promoted_prefix_tokens = prev_tokens.size() - best_overlap;
+    const std::string promoted_prefix = join_token_range(prev_tokens, 0, result.promoted_prefix_tokens);
+    if (!promoted_prefix.empty()) {
+        if (!committed_prefix_text.empty()) {
+            committed_prefix_text.push_back(' ');
+        }
+        committed_prefix_text += promoted_prefix;
+        committed_prefix_text = collapse_whitespace(committed_prefix_text);
+    }
+    return result;
+}
+
+std::string merge_committed_prefix_with_window(const std::string& committed_prefix, const std::string& latest_window) {
+    const std::string committed_clean = collapse_whitespace(committed_prefix);
+    const std::string window_clean = collapse_whitespace(latest_window);
+    if (committed_clean.empty()) {
+        return window_clean;
+    }
+    if (window_clean.empty()) {
+        return committed_clean;
+    }
+
+    const auto committed_tokens = tokenize_for_merge(committed_clean);
+    const auto window_tokens = tokenize_for_merge(window_clean);
+    if (committed_tokens.empty()) {
+        return window_clean;
+    }
+    if (window_tokens.empty()) {
+        return committed_clean;
+    }
+
+    const std::size_t overlap = best_suffix_prefix_overlap_tokens(committed_tokens, window_tokens);
     std::string merged = committed_clean;
-    merged.push_back(' ');
-    merged += partial_clean;
+    const std::string window_tail = join_token_range(window_tokens, overlap);
+    if (!window_tail.empty()) {
+        merged.push_back(' ');
+        merged += window_tail;
+    }
     return collapse_whitespace(merged);
 }
 
@@ -202,9 +209,12 @@ bool StreamingDictationSession::start(uint64_t session_id) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         committed_text_.clear();
+        committed_prefix_text_.clear();
+        previous_window_text_.clear();
+        latest_window_text_.clear();
         latest_partial_text_.clear();
         finalized_text_candidate_.clear();
-        previous_partial_text_.clear();
+        overlap_failure_count_ = 0;
         decode_in_progress_ = false;
         decode_iteration_count_ = 0;
         stream_first_partial_ms_ = -1;
@@ -265,16 +275,48 @@ void StreamingDictationSession::worker_loop() {
         last_decode_time_ = Clock::now();
         if (ok && !partial.empty()) {
             std::lock_guard<std::mutex> lock(mutex_);
-            previous_partial_text_ = latest_partial_text_;
-            latest_partial_text_ = partial;
-            committed_text_ = merge_partial_into_committed(committed_text_, partial);
-            finalized_text_candidate_ = committed_text_.empty() ? latest_partial_text_ : committed_text_;
+            const std::string current_window_text = collapse_whitespace(partial);
+            if (!latest_window_text_.empty()) {
+                previous_window_text_ = latest_window_text_;
+            }
+            bool overlap_match_ok = false;
+            std::size_t overlap_tokens = 0;
+            std::size_t promoted_prefix_tokens = 0;
+            if (!previous_window_text_.empty()) {
+                OverlapResult overlap_result =
+                    promote_window_prefix(committed_prefix_text_, previous_window_text_, current_window_text);
+                overlap_match_ok = overlap_result.match_ok;
+                overlap_tokens = overlap_result.overlap_tokens;
+                promoted_prefix_tokens = overlap_result.promoted_prefix_tokens;
+                if (!overlap_match_ok) {
+                    ++overlap_failure_count_;
+                    const std::string prev_clean = collapse_whitespace(previous_window_text_);
+                    const auto prev_tokens = tokenize_for_merge(prev_clean);
+                    const auto curr_tokens = tokenize_for_merge(current_window_text);
+                    latest_window_text_ = (curr_tokens.size() >= prev_tokens.size()) ? current_window_text : prev_clean;
+                    pipeline_debug::log("streaming",
+                                        "[STREAM_OVERLAP_WARNING] match=false action=replace_window_without_append",
+                                        true);
+                } else {
+                    latest_window_text_ = current_window_text;
+                }
+            } else {
+                latest_window_text_ = current_window_text;
+            }
+            latest_partial_text_ = latest_window_text_;
+            committed_text_ = committed_prefix_text_;
+            finalized_text_candidate_ = merge_committed_prefix_with_window(committed_prefix_text_, latest_window_text_);
             decode_in_progress_ = false;
             if (stream_first_partial_ms_ < 0) {
                 stream_first_partial_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(last_decode_time_ - capture_started_at_).count();
             }
             pipeline_debug::log("streaming", "[STREAM_PARTIAL_TEXT] chars=" + std::to_string(latest_partial_text_.size()));
-            pipeline_debug::log("streaming", "[STREAM_AGGREGATE_TEXT] chars=" + std::to_string(committed_text_.size()));
+            pipeline_debug::log("streaming", "[STREAM_OVERLAP_MATCH_OK] " + std::string(overlap_match_ok ? "true" : "false"));
+            pipeline_debug::log("streaming", "[STREAM_OVERLAP_TOKENS] n=" + std::to_string(overlap_tokens));
+            pipeline_debug::log("streaming", "[STREAM_PROMOTED_PREFIX_TOKENS] n=" + std::to_string(promoted_prefix_tokens));
+            pipeline_debug::log("streaming", "[STREAM_COMMITTED_PREFIX_CHARS] " + std::to_string(committed_prefix_text_.size()));
+            pipeline_debug::log("streaming", "[STREAM_WINDOW_CHARS] " + std::to_string(latest_window_text_.size()));
+            pipeline_debug::log("streaming", "[STREAM_FINAL_CANDIDATE_CHARS] " + std::to_string(finalized_text_candidate_.size()));
             pipeline_debug::log("streaming", "[STREAM_DECODE_END] iter=" + std::to_string(iteration) + " status=ok infer_ms=" + std::to_string(info.infer_ms));
         } else {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -305,30 +347,43 @@ StreamingDictationResult StreamingDictationSession::finalize() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         result.waited_for_inflight_decode = waited_for_inflight_decode;
-        result.committed_text = committed_text_;
-        result.latest_partial_text = latest_partial_text_;
+        result.committed_prefix_text = committed_prefix_text_;
+        result.latest_window_text = latest_window_text_;
+        result.final_candidate_text = finalized_text_candidate_;
+        result.committed_text = committed_prefix_text_;
+        result.latest_partial_text = latest_window_text_;
         result.decode_iteration_count = decode_iteration_count_;
         result.stream_first_partial_ms = stream_first_partial_ms_;
-        result.committed_chars = static_cast<int>(result.committed_text.size());
-        result.latest_partial_chars = static_cast<int>(result.latest_partial_text.size());
-        if (result.committed_text.empty() && !finalized_text_candidate_.empty()) {
-            result.committed_text = finalized_text_candidate_;
-            result.committed_chars = static_cast<int>(result.committed_text.size());
-        }
+        result.overlap_failure_count = overlap_failure_count_;
+        result.committed_prefix_chars = static_cast<int>(result.committed_prefix_text.size());
+        result.latest_window_chars = static_cast<int>(result.latest_window_text.size());
+        result.final_candidate_chars = static_cast<int>(result.final_candidate_text.size());
+        result.committed_chars = result.committed_prefix_chars;
+        result.latest_partial_chars = result.latest_window_chars;
     }
 
-    if (!result.committed_text.empty()) {
+    if (!result.final_candidate_text.empty()) {
         result.finalized = true;
         result.used_aggregate_text = true;
-        result.final_text = result.committed_text;
+        result.final_text = result.final_candidate_text;
         pipeline_debug::log("streaming", "[STREAM_FINALIZE_END] status=ok source=aggregate chars=" + std::to_string(result.final_text.size()) +
                                              " waited_for_inflight_decode=" + std::string(result.waited_for_inflight_decode ? "true" : "false"));
         return result;
     }
-    if (!result.latest_partial_text.empty()) {
+    const std::string combined_fallback =
+        merge_committed_prefix_with_window(result.committed_prefix_text, result.latest_window_text);
+    if (!combined_fallback.empty()) {
+        result.finalized = true;
+        result.used_aggregate_text = true;
+        result.final_text = combined_fallback;
+        pipeline_debug::log("streaming", "[STREAM_FINALIZE_END] status=ok source=aggregate chars=" + std::to_string(result.final_text.size()) +
+                                             " waited_for_inflight_decode=" + std::string(result.waited_for_inflight_decode ? "true" : "false"));
+        return result;
+    }
+    if (!result.latest_window_text.empty()) {
         result.finalized = true;
         result.used_partial_fallback = true;
-        result.final_text = result.latest_partial_text;
+        result.final_text = result.latest_window_text;
         pipeline_debug::log("streaming", "[STREAM_FINALIZE_END] status=ok source=latest_partial chars=" + std::to_string(result.final_text.size()) +
                                              " waited_for_inflight_decode=" + std::string(result.waited_for_inflight_decode ? "true" : "false"));
         return result;
