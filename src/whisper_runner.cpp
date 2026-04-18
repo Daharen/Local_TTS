@@ -3,35 +3,68 @@
 #include "paths.h"
 #include "pipeline_debug.h"
 
+#include "whisper.h"
+
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cctype>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
-#include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <cstdio>
-#include <sys/wait.h>
-#endif
 
 namespace {
 
-struct WhisperProfile {
-    std::string name;
-    std::vector<std::string> args;
-    bool requests_gpu = false;
+using Clock = std::chrono::steady_clock;
+
+template <typename T, typename = void>
+struct has_gpu_device_field : std::false_type {};
+
+template <typename T>
+struct has_gpu_device_field<T, std::void_t<decltype(std::declval<T&>().gpu_device)>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_no_context_field : std::false_type {};
+
+template <typename T>
+struct has_no_context_field<T, std::void_t<decltype(std::declval<T&>().no_context)>> : std::true_type {};
+
+struct WavData {
+    std::vector<float> samples;
+    int sample_rate = 0;
 };
 
-struct ProcessResult {
-    int exit_code = -1;
-    std::string stdout_text;
-    std::string stderr_text;
+struct ResidentWhisperState {
+    std::mutex mutex;
+    std::filesystem::path model_path;
+    bool initialized = false;
+    bool init_attempted = false;
+    bool use_gpu = false;
+    int gpu_device = 0;
+    bool flash_attn = false;
+    int threads = 0;
+    whisper_context* ctx = nullptr;
+
+    ~ResidentWhisperState() {
+        if (ctx != nullptr) {
+            whisper_free(ctx);
+            ctx = nullptr;
+        }
+    }
 };
+
+ResidentWhisperState& resident_state() {
+    static ResidentWhisperState state;
+    return state;
+}
 
 std::string trim_copy(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
@@ -40,11 +73,6 @@ std::string trim_copy(const std::string& s) {
     }
     const auto last = s.find_last_not_of(" \t\r\n");
     return s.substr(first, last - first + 1);
-}
-
-std::string to_lower_copy(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return text;
 }
 
 std::string clip_excerpt(const std::string& text, std::size_t limit = 320) {
@@ -58,279 +86,13 @@ std::string clip_excerpt(const std::string& text, std::size_t limit = 320) {
     return trimmed.substr(0, limit - 3) + "...";
 }
 
-std::filesystem::path find_whisper_cli_path(const std::filesystem::path& whisper_cpp_root) {
-    const std::vector<std::filesystem::path> candidates = {
-        whisper_cpp_root / "build" / "bin" / "Release" / "whisper-cli.exe",
-        whisper_cpp_root / "build" / "bin" / "whisper-cli.exe",
-        whisper_cpp_root / "build" / "Release" / "whisper-cli.exe",
-        whisper_cpp_root / "build" / "whisper-cli.exe",
-        whisper_cpp_root / "build" / "bin" / "Release" / "whisper-cli",
-        whisper_cpp_root / "build" / "bin" / "whisper-cli",
-        whisper_cpp_root / "build" / "whisper-cli",
-    };
-
-    for (const auto& candidate : candidates) {
-        if (std::filesystem::exists(candidate)) {
-            return candidate;
-        }
-    }
-
-    return {};
-}
-
-std::string quote_shell(const std::string& arg) {
-#ifdef _WIN32
-    return std::string("\"") + arg + "\"";
-#else
-    std::string out = "'";
-    for (char c : arg) {
-        if (c == '\'') {
-            out += "'\\''";
-        } else {
-            out.push_back(c);
-        }
-    }
-    out += "'";
-    return out;
-#endif
-}
-
-std::string build_command_line(const std::filesystem::path& exe_path, const std::vector<std::string>& args) {
-    std::ostringstream out;
-    out << quote_shell(exe_path.string());
-    for (const auto& arg : args) {
-        out << ' ' << quote_shell(arg);
-    }
-    return out.str();
-}
-
-#ifdef _WIN32
-std::wstring quote_windows_arg(const std::wstring& arg) {
-    std::wstring out = L"\"";
-    out += arg;
-    out += L"\"";
-    return out;
-}
-
-bool read_handle_all(HANDLE handle, std::string& out) {
-    if (!handle) {
-        return false;
-    }
-    char buffer[4096];
-    DWORD bytes_read = 0;
-    while (ReadFile(handle, buffer, sizeof(buffer), &bytes_read, nullptr) && bytes_read > 0) {
-        out.append(buffer, buffer + bytes_read);
-    }
-    const DWORD last = GetLastError();
-    return last == ERROR_BROKEN_PIPE || last == ERROR_SUCCESS;
-}
-
-ProcessResult run_process_capture(const std::filesystem::path& exe_path, const std::vector<std::string>& args) {
-    ProcessResult result;
-
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-
-    HANDLE stdout_read = nullptr;
-    HANDLE stdout_write = nullptr;
-    HANDLE stderr_read = nullptr;
-    HANDLE stderr_write = nullptr;
-
-    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)) {
-        result.stderr_text = "Failed to create stdout pipe.";
-        return result;
-    }
-    if (!CreatePipe(&stderr_read, &stderr_write, &sa, 0) || !SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) {
-        CloseHandle(stdout_read);
-        CloseHandle(stdout_write);
-        result.stderr_text = "Failed to create stderr pipe.";
-        return result;
-    }
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    si.hStdOutput = stdout_write;
-    si.hStdError = stderr_write;
-
-    PROCESS_INFORMATION pi{};
-    std::wstring cmd = quote_windows_arg(exe_path.wstring());
-    for (const auto& arg : args) {
-        cmd += L" ";
-        cmd += quote_windows_arg(std::filesystem::path(arg).wstring());
-    }
-
-    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
-    cmdline.push_back(L'\0');
-
-    const BOOL launched = CreateProcessW(nullptr,
-                                         cmdline.data(),
-                                         nullptr,
-                                         nullptr,
-                                         TRUE,
-                                         CREATE_NO_WINDOW,
-                                         nullptr,
-                                         nullptr,
-                                         &si,
-                                         &pi);
-
-    CloseHandle(stdout_write);
-    CloseHandle(stderr_write);
-
-    if (!launched) {
-        CloseHandle(stdout_read);
-        CloseHandle(stderr_read);
-        result.stderr_text = "Failed to launch whisper-cli executable.";
-        return result;
-    }
-
-    std::thread stdout_reader([&]() { read_handle_all(stdout_read, result.stdout_text); });
-    std::thread stderr_reader([&]() { read_handle_all(stderr_read, result.stderr_text); });
-
-    WaitForSingleObject(pi.hProcess, INFINITE);
-
-    if (stdout_reader.joinable()) {
-        stdout_reader.join();
-    }
-    if (stderr_reader.joinable()) {
-        stderr_reader.join();
-    }
-
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    result.exit_code = static_cast<int>(code);
-
-    CloseHandle(stdout_read);
-    CloseHandle(stderr_read);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return result;
-}
-#else
-ProcessResult run_process_capture(const std::filesystem::path& exe_path, const std::vector<std::string>& args) {
-    ProcessResult result;
-    const std::string cmd = build_command_line(exe_path, args) + " 2>&1";
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-        result.stderr_text = "Failed to launch whisper-cli executable.";
-        return result;
-    }
-
-    char buffer[4096];
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-        result.stdout_text += buffer;
-    }
-
-    const int rc = pclose(pipe);
-    if (WIFEXITED(rc)) {
-        result.exit_code = WEXITSTATUS(rc);
-    } else {
-        result.exit_code = rc;
-    }
-    return result;
-}
-#endif
-
-std::vector<WhisperProfile> build_profiles(const std::filesystem::path& model_path, const std::filesystem::path& audio_path) {
-    const bool request_gpu = is_whisper_gpu_requested();
-    const int gpu_device = get_whisper_gpu_device();
-    const bool flash_attn = is_whisper_flash_attn_enabled();
-    const int threads = get_whisper_threads();
-
-    std::vector<std::string> base_args = {
-        "-m", model_path.string(),
-        "-f", audio_path.string(),
-        "-nt",
-    };
-
-    if (threads > 0) {
-        base_args.push_back("-t");
-        base_args.push_back(std::to_string(threads));
-    }
-
-    std::vector<WhisperProfile> profiles;
-    if (request_gpu) {
-        WhisperProfile cuda_device{"gpu_device_cuda", base_args, true};
-        cuda_device.args.insert(cuda_device.args.end(), {"--device", "cuda", "--gpu-device", std::to_string(gpu_device)});
-        if (flash_attn) {
-            cuda_device.args.push_back("--flash-attn");
-        }
-        profiles.push_back(cuda_device);
-
-        WhisperProfile gpu_device_only{"gpu_device_only", base_args, true};
-        gpu_device_only.args.insert(gpu_device_only.args.end(), {"--gpu-device", std::to_string(gpu_device)});
-        if (flash_attn) {
-            gpu_device_only.args.push_back("--flash-attn");
-        }
-        profiles.push_back(gpu_device_only);
-    }
-
-    profiles.push_back(WhisperProfile{"cpu_safe", base_args, false});
-    return profiles;
-}
-
-bool should_try_next_profile(const ProcessResult& result, bool gpu_profile) {
-    if (!gpu_profile) {
-        return false;
-    }
-
-    const std::string combined = to_lower_copy(result.stdout_text + "\n" + result.stderr_text);
-    if (result.exit_code != 0) {
-        return true;
-    }
-
-    return combined.find("unknown argument") != std::string::npos ||
-           combined.find("invalid argument") != std::string::npos ||
-           combined.find("unrecognized option") != std::string::npos ||
-           combined.find("failed to initialize") != std::string::npos ||
-           combined.find("error:") != std::string::npos;
-}
-
-void classify_backend(const ProcessResult& result, bool gpu_requested, WhisperRunInfo& info) {
-    const std::string combined = to_lower_copy(result.stdout_text + "\n" + result.stderr_text);
-
-    const bool explicit_no_gpu = combined.find("no gpu found") != std::string::npos ||
-                                 combined.find("gpu backend") != std::string::npos ||
-                                 combined.find("device 0: cpu") != std::string::npos;
-
-    const bool has_gpu_signal = combined.find("cuda") != std::string::npos ||
-                                combined.find("cublas") != std::string::npos ||
-                                combined.find("vulkan") != std::string::npos ||
-                                combined.find("metal") != std::string::npos;
-
-    const bool cpu_signal = combined.find("device 0: cpu") != std::string::npos ||
-                            combined.find("using cpu") != std::string::npos;
-
-    info.gpu_active = has_gpu_signal && !explicit_no_gpu;
-    info.cpu_fallback_reported = cpu_signal || (gpu_requested && explicit_no_gpu);
-
-    if (info.gpu_active) {
-        info.backend_summary = gpu_requested ? "gpu active" : "gpu active (auto)";
-    } else if (gpu_requested && explicit_no_gpu) {
-        info.backend_summary = "gpu requested but unavailable; cpu fallback";
-    } else if (cpu_signal || !gpu_requested) {
-        info.backend_summary = "cpu";
-    } else {
-        info.backend_summary = "unknown/unclassified";
-    }
-
-    std::istringstream lines(result.stderr_text + "\n" + result.stdout_text);
-    std::string line;
-    while (std::getline(lines, line)) {
-        const auto lower = to_lower_copy(line);
-        if (lower.find("time") != std::string::npos || lower.find("timings") != std::string::npos) {
-            info.timing_excerpt = clip_excerpt(line, 220);
-            break;
-        }
-    }
+int resolve_threads() {
+    const int configured = get_whisper_threads();
+    return configured > 0 ? configured : 4;
 }
 
 bool resolve_transcribe_inputs(
     const std::filesystem::path& audio_path,
-    std::filesystem::path& whisper_cli,
     std::filesystem::path& model_path,
     std::string& error_out) {
     if (!std::filesystem::exists(audio_path)) {
@@ -344,35 +106,203 @@ bool resolve_transcribe_inputs(
         return false;
     }
 
-    const auto cli_override = get_whisper_cli_path_override();
-    if (!cli_override.empty()) {
-        if (!std::filesystem::exists(cli_override)) {
-            error_out = "Configured whisper executable not found: " + cli_override.string();
+    return true;
+}
+
+bool read_exact(std::ifstream& in, void* dst, std::size_t n) {
+    in.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(n));
+    return in.good() || in.gcount() == static_cast<std::streamsize>(n);
+}
+
+bool load_wav_pcm16_mono_16khz(const std::filesystem::path& audio_path, WavData& out, std::string& error_out) {
+    std::ifstream in(audio_path, std::ios::binary);
+    if (!in) {
+        error_out = "Failed to open wav file: " + audio_path.string();
+        return false;
+    }
+
+    std::array<char, 4> riff{};
+    std::uint32_t riff_size = 0;
+    std::array<char, 4> wave{};
+    if (!read_exact(in, riff.data(), riff.size()) || !read_exact(in, &riff_size, sizeof(riff_size)) ||
+        !read_exact(in, wave.data(), wave.size())) {
+        error_out = "Invalid WAV header: truncated RIFF/WAVE header.";
+        return false;
+    }
+
+    if (std::memcmp(riff.data(), "RIFF", 4) != 0 || std::memcmp(wave.data(), "WAVE", 4) != 0) {
+        error_out = "Invalid WAV header: expected RIFF/WAVE.";
+        return false;
+    }
+
+    bool found_fmt = false;
+    bool found_data = false;
+    std::uint16_t audio_format = 0;
+    std::uint16_t channels = 0;
+    std::uint32_t sample_rate = 0;
+    std::uint16_t bits_per_sample = 0;
+    std::vector<std::int16_t> pcm;
+
+    while (in) {
+        std::array<char, 4> chunk_id{};
+        std::uint32_t chunk_size = 0;
+        if (!read_exact(in, chunk_id.data(), chunk_id.size())) {
+            break;
+        }
+        if (!read_exact(in, &chunk_size, sizeof(chunk_size))) {
+            error_out = "Invalid WAV header: truncated chunk size.";
             return false;
         }
-        whisper_cli = cli_override;
+
+        if (std::memcmp(chunk_id.data(), "fmt ", 4) == 0) {
+            if (chunk_size < 16) {
+                error_out = "Unsupported WAV fmt chunk: too small.";
+                return false;
+            }
+
+            std::uint16_t block_align = 0;
+            std::uint32_t byte_rate = 0;
+            if (!read_exact(in, &audio_format, sizeof(audio_format)) || !read_exact(in, &channels, sizeof(channels)) ||
+                !read_exact(in, &sample_rate, sizeof(sample_rate)) || !read_exact(in, &byte_rate, sizeof(byte_rate)) ||
+                !read_exact(in, &block_align, sizeof(block_align)) || !read_exact(in, &bits_per_sample, sizeof(bits_per_sample))) {
+                error_out = "Invalid WAV fmt chunk: truncated fields.";
+                return false;
+            }
+
+            const std::uint32_t remaining = chunk_size - 16;
+            if (remaining > 0) {
+                in.seekg(static_cast<std::streamoff>(remaining), std::ios::cur);
+            }
+            found_fmt = true;
+        } else if (std::memcmp(chunk_id.data(), "data", 4) == 0) {
+            if (chunk_size % sizeof(std::int16_t) != 0) {
+                error_out = "Unsupported WAV data chunk: expected 16-bit PCM alignment.";
+                return false;
+            }
+            pcm.resize(chunk_size / sizeof(std::int16_t));
+            if (!read_exact(in, pcm.data(), chunk_size)) {
+                error_out = "Invalid WAV data chunk: truncated payload.";
+                return false;
+            }
+            found_data = true;
+        } else {
+            in.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
+        }
+
+        if (chunk_size % 2 != 0) {
+            in.seekg(1, std::ios::cur);
+        }
+    }
+
+    if (!found_fmt) {
+        error_out = "Invalid WAV file: missing fmt chunk.";
+        return false;
+    }
+    if (!found_data) {
+        error_out = "Invalid WAV file: missing data chunk.";
+        return false;
+    }
+
+    if (audio_format != 1) {
+        error_out = "Unsupported WAV format: only PCM is supported.";
+        return false;
+    }
+    if (channels != 1) {
+        error_out = "Unsupported WAV format: only mono channel is supported.";
+        return false;
+    }
+    if (sample_rate != 16000) {
+        error_out = "Unsupported WAV format: expected sample rate 16000 Hz.";
+        return false;
+    }
+    if (bits_per_sample != 16) {
+        error_out = "Unsupported WAV format: expected 16-bit samples.";
+        return false;
+    }
+
+    out.sample_rate = static_cast<int>(sample_rate);
+    out.samples.resize(pcm.size());
+    constexpr float kScale = 1.0f / 32768.0f;
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+        out.samples[i] = static_cast<float>(pcm[i]) * kScale;
+    }
+
+    return true;
+}
+
+std::string build_profile_excerpt(bool use_gpu, int gpu_device, bool flash_attn, int threads) {
+    std::ostringstream out;
+    out << "in_process use_gpu=" << (use_gpu ? "true" : "false")
+        << " gpu_device=" << gpu_device
+        << " flash_attn=" << (flash_attn ? "true" : "false")
+        << " threads=" << threads
+        << " sampling=greedy single_segment=true no_timestamps=true temp_inc=0";
+    return out.str();
+}
+
+bool ensure_resident_context(
+    ResidentWhisperState& state,
+    const std::filesystem::path& model_path,
+    bool use_gpu,
+    int gpu_device,
+    bool flash_attn,
+    int threads,
+    bool& init_reused,
+    double& init_ms,
+    std::string& error_out) {
+    const bool config_changed = !state.initialized || state.model_path != model_path || state.use_gpu != use_gpu ||
+                                state.gpu_device != gpu_device || state.flash_attn != flash_attn || state.threads != threads;
+
+    if (!config_changed) {
+        init_reused = true;
+        init_ms = 0.0;
         return true;
     }
 
-    const auto whisper_cpp_root = get_whisper_cpp_root();
-    whisper_cli = find_whisper_cli_path(whisper_cpp_root);
-    if (whisper_cli.empty()) {
-        error_out = "whisper-cli executable not found under: " + whisper_cpp_root.string();
+    init_reused = false;
+
+    if (state.ctx != nullptr) {
+        whisper_free(state.ctx);
+        state.ctx = nullptr;
+    }
+
+    auto init_started = Clock::now();
+
+    whisper_context_params cparams = whisper_context_default_params();
+    cparams.use_gpu = use_gpu;
+    cparams.flash_attn = flash_attn;
+    if constexpr (has_gpu_device_field<whisper_context_params>::value) {
+        cparams.gpu_device = gpu_device;
+    }
+
+    const std::string model_path_string = model_path.string();
+    state.ctx = whisper_init_from_file_with_params(model_path_string.c_str(), cparams);
+    init_ms = std::chrono::duration<double, std::milli>(Clock::now() - init_started).count();
+
+    state.init_attempted = true;
+    state.model_path = model_path;
+    state.use_gpu = use_gpu;
+    state.gpu_device = gpu_device;
+    state.flash_attn = flash_attn;
+    state.threads = threads;
+    state.initialized = state.ctx != nullptr;
+
+    if (state.ctx == nullptr) {
+        error_out = "Failed to initialize whisper context for model: " + model_path.string();
         return false;
     }
 
     return true;
 }
 
-std::string join_args_excerpt(const std::vector<std::string>& args, std::size_t max_len = 280) {
-    std::string out;
-    for (const auto& arg : args) {
-        if (!out.empty()) {
-            out.push_back(' ');
-        }
-        out += arg;
-    }
-    return clip_excerpt(out, max_len);
+std::string summarize_timings(double init_ms, double wav_ms, double infer_ms, double extract_ms, double total_ms) {
+    std::ostringstream out;
+    out << "init_ms=" << init_ms
+        << " wav_ms=" << wav_ms
+        << " infer_ms=" << infer_ms
+        << " extract_ms=" << extract_ms
+        << " total_ms=" << total_ms;
+    return out.str();
 }
 
 }  // namespace
@@ -389,73 +319,134 @@ bool transcribe_file_to_string_with_info(
     WhisperRunInfo& info = info_out ? *info_out : local_info;
     info = WhisperRunInfo{};
     info.gpu_requested = is_whisper_gpu_requested();
+    info.resolved_whisper_executable = "in_process_resident";
 
-    std::filesystem::path whisper_cli;
+    const auto total_start = Clock::now();
+
     std::filesystem::path model_path;
-    if (!resolve_transcribe_inputs(audio_path, whisper_cli, model_path, error_out)) {
-        info.resolved_whisper_executable = whisper_cli.string();
+    if (!resolve_transcribe_inputs(audio_path, model_path, error_out)) {
         info.resolved_model_path = model_path.string();
-        info.backend_summary = "resolve-failed";
-        pipeline_debug::log("whisper", error_out, true);
+        info.backend_summary = model_path.empty() ? "input_missing" : "model_missing";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=" + info.backend_summary + " message=" + error_out, true);
         return false;
     }
 
-    info.resolved_whisper_executable = whisper_cli.string();
     info.resolved_model_path = model_path.string();
 
-    const auto profiles = build_profiles(model_path, audio_path);
-    std::string profile_notes;
-
-    ProcessResult chosen_result;
-    std::vector<std::string> chosen_args;
-    bool profile_selected = false;
-    for (std::size_t i = 0; i < profiles.size(); ++i) {
-        const auto& profile = profiles[i];
-        const ProcessResult result = run_process_capture(whisper_cli, profile.args);
-
-        if (should_try_next_profile(result, profile.requests_gpu) && i + 1 < profiles.size()) {
-            profile_notes += "profile=" + profile.name + " rejected; ";
-            continue;
-        }
-
-        profile_selected = true;
-        chosen_result = result;
-        chosen_args = profile.args;
-        profile_notes += "profile=" + profile.name + " selected";
-        break;
+    const auto wav_start = Clock::now();
+    WavData wav_data;
+    if (!load_wav_pcm16_mono_16khz(audio_path, wav_data, error_out)) {
+        info.backend_summary = "wav_parse_failed";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.argument_excerpt = build_profile_excerpt(info.gpu_requested, get_whisper_gpu_device(), is_whisper_flash_attn_enabled(), resolve_threads());
+        info.exit_code = 1;
+        info.timing_excerpt = summarize_timings(0.0, std::chrono::duration<double, std::milli>(Clock::now() - wav_start).count(), 0.0, 0.0,
+                                                std::chrono::duration<double, std::milli>(Clock::now() - total_start).count());
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=wav_parse_failed message=" + error_out, true);
+        return false;
     }
+    const double wav_ms = std::chrono::duration<double, std::milli>(Clock::now() - wav_start).count();
 
-    if (!profile_selected) {
-        error_out = "Unable to execute whisper profile.";
-        info.backend_summary = "launch-failed";
-        pipeline_debug::log("whisper", error_out, true);
+    auto& state = resident_state();
+    std::lock_guard<std::mutex> guard(state.mutex);
+
+    const bool use_gpu = is_whisper_gpu_requested();
+    const int gpu_device = get_whisper_gpu_device();
+    const bool flash_attn = is_whisper_flash_attn_enabled();
+    const int threads = resolve_threads();
+
+    bool init_reused = false;
+    double init_ms = 0.0;
+    if (!ensure_resident_context(state, model_path, use_gpu, gpu_device, flash_attn, threads, init_reused, init_ms, error_out)) {
+        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+        info.backend_summary = "resident_init_failed";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        info.gpu_active = false;
+        info.cpu_fallback_reported = false;
+        info.timing_excerpt = summarize_timings(init_ms, wav_ms, 0.0, 0.0,
+                                                std::chrono::duration<double, std::milli>(Clock::now() - total_start).count());
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=resident_init_failed message=" + error_out, true);
         return false;
     }
 
-    text_out = trim_copy(chosen_result.stdout_text);
+    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    wparams.print_progress = false;
+    wparams.print_special = false;
+    wparams.print_realtime = false;
+    wparams.print_timestamps = false;
+    wparams.translate = false;
+    wparams.no_timestamps = true;
+    wparams.single_segment = true;
+    wparams.language = "en";
+    wparams.n_threads = threads;
+    wparams.prompt_tokens = nullptr;
+    wparams.prompt_n_tokens = 0;
+    wparams.temperature_inc = 0.0f;
+    if constexpr (has_no_context_field<whisper_full_params>::value) {
+        wparams.no_context = true;
+    }
 
-    info.argument_excerpt = join_args_excerpt(chosen_args);
-    info.stdout_excerpt = clip_excerpt(chosen_result.stdout_text);
-    info.stderr_excerpt = clip_excerpt(chosen_result.stderr_text);
-    info.exit_code = chosen_result.exit_code;
+    const auto infer_start = Clock::now();
+    const int infer_rc = whisper_full(state.ctx, wparams, wav_data.samples.data(), static_cast<int>(wav_data.samples.size()));
+    const double infer_ms = std::chrono::duration<double, std::milli>(Clock::now() - infer_start).count();
 
-    classify_backend(chosen_result, info.gpu_requested, info);
-    pipeline_debug::log("whisper", profile_notes + ", backend=" + info.backend_summary + ", exit_code=" + std::to_string(info.exit_code));
-
-    if (chosen_result.exit_code != 0) {
-        error_out = trim_copy(chosen_result.stderr_text);
-        if (error_out.empty()) {
-            error_out = "whisper-cli exited with non-zero status.";
-        }
-        pipeline_debug::log("whisper", error_out, true);
+    if (infer_rc != 0) {
+        error_out = "whisper_full failed with status: " + std::to_string(infer_rc);
+        info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+        info.backend_summary = "infer_failed";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        info.gpu_active = state.use_gpu;
+        info.cpu_fallback_reported = false;
+        info.timing_excerpt = summarize_timings(init_ms, wav_ms, infer_ms, 0.0,
+                                                std::chrono::duration<double, std::milli>(Clock::now() - total_start).count());
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=infer_failed message=" + error_out, true);
         return false;
     }
+
+    const auto extract_start = Clock::now();
+    const int n_segments = whisper_full_n_segments(state.ctx);
+    std::string transcript;
+    for (int i = 0; i < n_segments; ++i) {
+        if (const char* segment = whisper_full_get_segment_text(state.ctx, i)) {
+            transcript += segment;
+        }
+    }
+    text_out = trim_copy(transcript);
+    const double extract_ms = std::chrono::duration<double, std::milli>(Clock::now() - extract_start).count();
+    const double total_ms = std::chrono::duration<double, std::milli>(Clock::now() - total_start).count();
+
+    info.argument_excerpt = build_profile_excerpt(use_gpu, gpu_device, flash_attn, threads);
+    info.stdout_excerpt.clear();
+    info.exit_code = 0;
+    info.gpu_active = state.use_gpu;
+    info.cpu_fallback_reported = false;
+    info.backend_summary = state.use_gpu ? "in_process_gpu" : "in_process_cpu";
+    info.timing_excerpt = summarize_timings(init_ms, wav_ms, infer_ms, extract_ms, total_ms);
 
     if (text_out.empty()) {
-        error_out = "whisper-cli returned empty transcript output.";
-        pipeline_debug::log("whisper", error_out, true);
+        error_out = "Whisper returned empty transcript output.";
+        info.backend_summary = "empty_transcript";
+        info.stderr_excerpt = clip_excerpt(error_out);
+        info.exit_code = 1;
+        pipeline_debug::log("whisper", "mode=in_process_resident failure=empty_transcript", true);
         return false;
     }
+
+    info.stderr_excerpt.clear();
+
+    std::ostringstream log_line;
+    log_line << "mode=in_process_resident"
+             << " backend=" << info.backend_summary
+             << " init_reused=" << (init_reused ? "true" : "false")
+             << " wav_ms=" << wav_ms
+             << " infer_ms=" << infer_ms
+             << " segments=" << n_segments
+             << " chars=" << text_out.size();
+    pipeline_debug::log("whisper", log_line.str());
 
     return true;
 }
