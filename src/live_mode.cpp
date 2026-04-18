@@ -200,7 +200,11 @@ private:
         int stream_length_ms = 0;
         int stream_keep_ms = 0;
         int latest_partial_chars = 0;
+        int committed_chars = 0;
         bool finalization_used_partial_fallback = false;
+        bool stream_used_aggregate_text = false;
+        bool stream_waited_for_inflight_decode = false;
+        std::string stream_finalization_source;
         int64_t stream_first_partial_ms = -1;
         double stream_final_infer_ms = 0.0;
     };
@@ -376,7 +380,13 @@ private:
                 stream_result = stream_session_->finalize();
                 log.stream_decode_iterations = stream_result.decode_iteration_count;
                 log.latest_partial_chars = stream_result.latest_partial_chars;
+                log.committed_chars = stream_result.committed_chars;
                 log.finalization_used_partial_fallback = stream_result.used_partial_fallback;
+                log.stream_used_aggregate_text = stream_result.used_aggregate_text;
+                log.stream_waited_for_inflight_decode = stream_result.waited_for_inflight_decode;
+                log.stream_finalization_source = stream_result.used_aggregate_text
+                                                     ? "aggregate"
+                                                     : (stream_result.used_partial_fallback ? "latest_partial" : "none");
                 log.stream_first_partial_ms = stream_result.stream_first_partial_ms;
                 log.stream_final_infer_ms = stream_result.stream_final_infer_ms;
                 if (stream_result.finalized) {
@@ -391,8 +401,11 @@ private:
                 debug_line("[STREAM_LENGTH_MS] " + std::to_string(log.stream_length_ms));
                 debug_line("[STREAM_KEEP_MS] " + std::to_string(log.stream_keep_ms));
                 debug_line("[STREAM_LATEST_PARTIAL_CHARS] " + std::to_string(log.latest_partial_chars));
+                debug_line("[STREAM_COMMITTED_CHARS] " + std::to_string(log.committed_chars));
                 debug_line(std::string("[STREAM_FINALIZATION_USED_PARTIAL_FALLBACK] ") +
                            (log.finalization_used_partial_fallback ? "true" : "false"));
+                debug_line(std::string("[STREAM_FINALIZATION_SOURCE] ") + log.stream_finalization_source);
+                debug_line(std::string("[STREAM_WAITED_FOR_INFLIGHT_DECODE] ") + (log.stream_waited_for_inflight_decode ? "true" : "false"));
                 debug_line("[STREAM_FIRST_PARTIAL_MS] " + std::to_string(log.stream_first_partial_ms));
                 debug_line("[STREAM_FINAL_INFER_MS] " + std::to_string(log.stream_final_infer_ms));
             } else {
@@ -426,9 +439,11 @@ private:
                     whisper_info.exit_code = 0;
                     whisper_info.gpu_requested = is_whisper_gpu_requested();
                     whisper_info.gpu_active = is_whisper_gpu_requested();
-                    whisper_info.infer_ms = log.stream_final_infer_ms;
-                    whisper_info.total_ms = log.stream_final_infer_ms;
-                    whisper_info.timing_excerpt = "stream_final_infer_ms=" + std::to_string(log.stream_final_infer_ms);
+                    whisper_info.infer_ms = 0.0;
+                    whisper_info.total_ms = 0.0;
+                    whisper_info.timing_excerpt = "stream_finalize_source=" + log.stream_finalization_source +
+                                                  " waited_for_inflight_decode=" +
+                                                  std::string(log.stream_waited_for_inflight_decode ? "true" : "false");
                 }
                 log.whisper_exe = whisper_info.resolved_whisper_executable;
                 log.whisper_args = whisper_info.argument_excerpt;
@@ -838,7 +853,10 @@ private:
         out << "[STREAM_LENGTH_MS] " << log.stream_length_ms << "\n";
         out << "[STREAM_KEEP_MS] " << log.stream_keep_ms << "\n";
         out << "[STREAM_LATEST_PARTIAL_CHARS] " << log.latest_partial_chars << "\n";
+        out << "[STREAM_COMMITTED_CHARS] " << log.committed_chars << "\n";
         out << "[STREAM_FINALIZATION_USED_PARTIAL_FALLBACK] " << (log.finalization_used_partial_fallback ? "true" : "false") << "\n";
+        out << "[STREAM_FINALIZATION_SOURCE] " << (log.stream_finalization_source.empty() ? "none" : log.stream_finalization_source) << "\n";
+        out << "[STREAM_WAITED_FOR_INFLIGHT_DECODE] " << (log.stream_waited_for_inflight_decode ? "true" : "false") << "\n";
         out << "[STREAM_FIRST_PARTIAL_MS] " << log.stream_first_partial_ms << "\n";
         out << "[STREAM_FINAL_INFER_MS] " << log.stream_final_infer_ms << "\n";
         out << "[CORRECTION_MODE] " << log.correction_mode << "\n";

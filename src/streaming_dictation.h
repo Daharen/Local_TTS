@@ -14,9 +14,13 @@
 struct StreamingDictationResult {
     bool finalized = false;
     bool used_partial_fallback = false;
+    bool used_aggregate_text = false;
+    bool waited_for_inflight_decode = false;
     int decode_iteration_count = 0;
     int latest_partial_chars = 0;
+    int committed_chars = 0;
     std::string latest_partial_text;
+    std::string committed_text;
     std::string final_text;
     std::string error;
     int64_t stream_first_partial_ms = -1;
@@ -46,7 +50,11 @@ private:
     std::thread worker_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
+    std::string committed_text_;
     std::string latest_partial_text_;
+    std::string finalized_text_candidate_;
+    std::string previous_partial_text_;
+    bool decode_in_progress_ = false;
     int decode_iteration_count_ = 0;
     int64_t stream_first_partial_ms_ = -1;
     std::vector<float> keep_tail_pcm_;
